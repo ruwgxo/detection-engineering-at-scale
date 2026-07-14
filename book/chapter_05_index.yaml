@@ -1,0 +1,438 @@
+# chapter_05_index.yaml
+
+---
+document_info:
+  title: 'Chapter 5: AI Security Detection: LLMs, Prompt Injection, Jailbreaks - Index'
+  book: 'Detection Engineering at Scale: Building Security Intelligence Platforms'
+  chapter: 5
+  part: 2
+  author: Raghav Dinesh
+  github: https://github.com/ruwgxo/detection-engineering-at-scale
+  license: MIT
+  created: '2026-07-14'
+  version: '1.0'
+  description: |
+    Comprehensive index for Chapter 5 covering AI Security Detection -- treating the security
+    of LLM applications as a detection engineering problem rather than a product evaluation.
+    Chapter 4 established the SIEM-agnostic detection layer: OCSF normalisation at ingest and
+    Sigma as the platform-independent rule language. Chapter 5 points that layer at an attack
+    surface existing detection programs do not cover: the LLM application. It opens by naming
+    the gap -- why rules written for endpoints, networks, and cloud control planes structurally
+    cannot see prompt injection, jailbreaks, poisoning, or model extraction -- and by defining
+    the telemetry an LLM-aware platform must collect. It then adopts the OWASP LLM Top 10
+    (2025 edition) as the coverage framework and MITRE ATLAS as the adversarial-ML TTP map,
+    mirroring the role MITRE ATT&CK played in Chapter 1. The middle of the chapter builds the
+    detection methods themselves: regex, classifier, and hybrid approaches to prompt injection;
+    pattern libraries and semantic-distance methods for jailbreaks; supply-chain indicators for
+    training data poisoning; and rate-anomaly detection for model extraction and API abuse.
+    Output-side monitoring covers PII leakage, toxicity, and data exfiltration through
+    completions. The chapter closes with the production architecture that places these
+    detectors at API gateway scale, connecting forward to the deployment patterns of Part 3.
+    Every detection in the chapter is expressed SIEM-agnostically -- Sigma where rule logic
+    suffices, classifier contracts where it does not -- and every telemetry source is
+    normalised to OCSF per the Chapter 4 layer.
+  tags:
+    - ai-security-detection
+    - llm-security
+    - prompt-injection
+    - indirect-prompt-injection
+    - jailbreak-detection
+    - owasp-llm-top-10
+    - mitre-atlas
+    - data-poisoning
+    - model-extraction
+    - api-abuse
+    - rate-anomaly
+    - output-monitoring
+    - pii-leakage
+    - semantic-distance
+    - classifier-detection
+    - hybrid-detection
+    - api-gateway
+    - ocsf-normalisation
+    - sigma-rules
+    - detection-engineering
+
+chapter_overview:
+  number: 5
+  title: 'AI Security Detection: LLMs, Prompt Injection, Jailbreaks'
+  part: 'Part II: Modern Detection'
+  position: >
+    Second chapter of Part II. Builds directly on the Chapter 4 open-standards layer (OCSF
+    normalisation, Sigma rule authoring) and applies the Chapter 1 lifecycle and Chapter 3
+    detection-as-code discipline to the newest attack surface the platform must cover.
+    Feeds forward to Chapter 6 (modern attack surfaces share the API-layer telemetry built
+    here), Chapter 7 (the classifier detectors introduced here are generalised into the
+    behavioral analytics stack), and Chapter 9 (the gateway-scale architecture of 5.9 meets
+    billion-event performance engineering).
+  purpose: >
+    Give the detection engineer a complete, framework-anchored, SIEM-agnostic detection
+    capability for LLM applications: the telemetry to collect, the coverage frameworks to
+    measure against, the rule- and classifier-based detections for each attack class in the
+    OWASP LLM Top 10, and the production architecture that runs them at API gateway scale.
+  learning_path:
+    detection_gap: '5.1 names the structural reasons existing rules miss LLM attacks and inventories the telemetry the platform must add'
+    owasp_llm_top_10: '5.2 adopts the OWASP LLM Top 10 (2025) as the chapter coverage framework and classifies each risk by detectability'
+    mitre_atlas: '5.3 maps ATLAS adversarial-ML tactics and techniques to detection hypotheses, mirroring ATT&CK-as-architecture from 1.4'
+    prompt_injection: '5.4 builds the three-method prompt injection stack: regex for known patterns, classifier for semantics, hybrid for production'
+    jailbreak_detection: '5.5 extends injection detection to jailbreaks with pattern libraries and semantic-distance methods'
+    poisoning_indicators: '5.6 treats training data poisoning as a supply-chain detection problem with pipeline provenance indicators'
+    extraction_and_abuse: '5.7 detects model extraction and API abuse with rate-anomaly detection over gateway telemetry'
+    output_monitoring: '5.8 turns the output channel into a monitored surface: PII leakage, toxicity, and exfiltration through completions'
+    production_architecture: '5.9 assembles the detectors into an API-gateway-scale architecture with explicit latency and placement decisions'
+    summary: '5.10 synthesises the chapter and hands off to Chapter 6 modern attack surfaces'
+  prerequisites:
+    - 'Chapter 1: the detection lifecycle (1.2) and ATT&CK-as-architecture coverage mapping (1.4)'
+    - 'Chapter 2: the four-layer platform model and the correlation engine (stateful vs stateless)'
+    - 'Chapter 3: detection-as-code -- rule schema, unit testing, CI/CD pipeline'
+    - 'Chapter 4: OCSF normalisation layer and production Sigma rule authoring'
+    - 'Working Python: the classifier and telemetry deliverables assume comfort with Python 3.12+'
+    - 'No prior ML security background assumed; deeper ML foundations live in the companion repo ruwgxo/ai-security-mastery'
+  structure:
+    total_sections: 10
+    content_sections: 9
+    summary_sections: 1
+    estimated_pages: 42
+    average_pages_per_section: 4.2
+    page_range: '3-6 pages per section'
+  key_deliverables:
+    - 'LLM telemetry gap assessment tool: scores an environment against the required LLM telemetry inventory'
+    - 'OCSF-aligned prompt/completion event schema for gateway logging with privacy field controls'
+    - 'OWASP LLM Top 10 (2025) detection coverage matrix: risk -> telemetry -> detection method -> section'
+    - 'ATLAS technique-to-detection-hypothesis mapping file, machine-readable'
+    - 'Prompt injection detection stack: regex rule pack (Sigma), classifier contract, and hybrid decision layer'
+    - 'Jailbreak pattern library with semantic-distance scoring module'
+    - 'Poisoning supply-chain indicator ruleset for training pipeline telemetry'
+    - 'Rate-anomaly detector for model extraction over API gateway logs'
+    - 'Output monitoring pipeline: PII, toxicity, and exfiltration checks on completions'
+    - 'Reference production architecture: AI security detection at API gateway scale with placement and latency budget'
+  security_themes:
+    the_attack_is_semantic_not_syntactic: >
+      LLM attacks are expressed in natural language inside allowed operations; detection must
+      move beyond IOC matching to semantic and behavioral methods without abandoning the rule
+      discipline that makes detection testable.
+    telemetry_before_detection: >
+      No rule can fire on events the platform never sees; the prompt/completion channel,
+      token accounting, and pipeline provenance are new mandatory log sources, collected
+      under explicit privacy constraints.
+    frameworks_are_coverage_maps: >
+      OWASP LLM Top 10 and MITRE ATLAS play the role ATT&CK played in Chapter 1 -- not
+      checklists to claim compliance against but maps to measure detection coverage against.
+    open_standards_survive_the_hype_cycle: >
+      AI security vendors churn; OCSF-normalised telemetry and Sigma-expressed logic keep
+      the detection layer durable through vendor and model turnover.
+    verify_volatile_anchors: >
+      Framework versions move fast (LLM Top 10 2025 edition current as of writing; ASI 2026
+      published for agentic systems). Anchor detections to attack classes, cite versions
+      explicitly, and re-verify before publication.
+  progression:
+    stage_1_framing: '5.1 establishes the gap and the telemetry inventory (why existing rules cannot see this surface)'
+    stage_2_frameworks: '5.2 and 5.3 install the coverage frameworks (OWASP LLM Top 10, MITRE ATLAS)'
+    stage_3_detections: '5.4 through 5.8 build the detections per attack class (injection, jailbreak, poisoning, extraction, output)'
+    stage_4_production: '5.9 assembles the production gateway architecture; 5.10 synthesises and bridges to Chapter 6'
+
+sections:
+  - section_number: 1
+    title: 'The AI Security Detection Gap: Why Existing Rules Do Not Cover LLMs'
+    filename: 'section_05_01_ai_security_detection_gap.yaml'
+    note: 'Framing anchor for the chapter; every later section answers a gap named here'
+    estimated_pages: 5
+    topics:
+      - 'Why detection programs with strong endpoint, network, and cloud coverage are blind to LLM attacks'
+      - 'Five structural mismatches between traditional detection assumptions and LLM application reality'
+      - 'The collapse of the data/instruction boundary as a detection problem'
+      - 'LLM attack surface inventory from a detection standpoint'
+      - 'The mandatory telemetry inventory: prompts, completions, token accounting, tool calls, pipeline provenance'
+      - 'Privacy constraints on prompt/completion logging'
+      - 'Normalising LLM telemetry to OCSF per the Chapter 4 layer'
+      - 'The chapter roadmap as a response to the gap'
+    key_concepts:
+      - 'Semantic payloads defeat syntactic rules'
+      - 'Attacks inside allowed operations'
+      - 'Telemetry-first detection engineering'
+      - 'Coverage measured per attack class, not per rule'
+    deliverables:
+      - 'llm_telemetry_gap_assessment.py: scores existing log sources against the LLM telemetry inventory'
+      - 'llm_attack_surface_map.yaml: machine-readable attack surface -> telemetry -> detection method map'
+      - 'ocsf_genai_event_schema.yaml: OCSF-aligned prompt/completion gateway event schema with privacy controls'
+      - 'detection_gap_scorecard.md: template for reporting the LLM detection gap to platform stakeholders'
+    security_preview: 'A detection platform that cannot see the prompt channel has a false-negative rate of one hundred percent on the fastest-growing attack surface in the enterprise'
+
+  - section_number: 2
+    title: 'OWASP LLM Top 10 as a Detection Framework'
+    filename: 'section_05_02_owasp_llm_top_10_detection_framework.yaml'
+    estimated_pages: 5
+    topics:
+      - 'The OWASP LLM Top 10 2025 edition (v2.0): the ten risks and what changed from v1.x'
+      - 'Reading a risk taxonomy as a detection coverage map rather than a compliance checklist'
+      - 'Detectability classification: rule-detectable, classifier-detectable, behavioral, and architectural risks'
+      - 'Per-risk telemetry requirements and detection hypotheses'
+      - 'LLM01 prompt injection and LLM07 system prompt leakage as the highest-exploitation entries'
+      - 'The coverage matrix: risk -> telemetry -> method -> owning section'
+      - 'Version volatility: pinning detections to attack classes, citing framework versions explicitly'
+      - 'OWASP ASI (agentic) 2026 as a forward extension, out of chapter scope'
+    key_concepts:
+      - 'Framework-as-coverage-map'
+      - 'Detectability classes'
+      - 'Version-pinned citations'
+      - 'Coverage matrix as living artifact'
+    deliverables:
+      - 'owasp_llm_top10_coverage_matrix.yaml: the ten risks mapped to telemetry, method, and section'
+      - 'coverage_gap_report.py: renders the matrix into a gap report against a given environment'
+      - 'risk_detectability_reference.md: per-risk detectability class with rationale'
+      - 'sigma_tag_convention.md: tagging convention binding Sigma rules to LLM Top 10 risk IDs'
+    security_preview: 'A framework only improves detection when every entry is either covered by a tested detection or recorded as an accepted gap -- silence is the failure mode'
+
+  - section_number: 3
+    title: 'ATLAS ATT&CK for ML: Mapping Adversarial ML Tactics to Detection'
+    filename: 'section_05_03_atlas_adversarial_ml_mapping.yaml'
+    estimated_pages: 4
+    topics:
+      - 'MITRE ATLAS structure: tactics, techniques, and case studies for adversarial ML'
+      - 'How ATLAS relates to ATT&CK and where the analogy breaks'
+      - 'Translating ATLAS techniques into detection hypotheses per the Chapter 1 lifecycle'
+      - 'Which ATLAS techniques produce observable telemetry and which do not'
+      - 'Mapping ATLAS to the OWASP LLM Top 10 coverage matrix from 5.2'
+      - 'Using ATLAS case studies as detection test scenarios'
+      - 'Do-not-cite-from-memory discipline: verifying current technique inventories before publication'
+    key_concepts:
+      - 'TTP-to-hypothesis translation'
+      - 'Observability-scoped coverage'
+      - 'Case studies as test corpus'
+      - 'Framework cross-mapping'
+    deliverables:
+      - 'atlas_detection_hypotheses.yaml: machine-readable technique -> hypothesis -> telemetry mapping'
+      - 'atlas_owasp_crosswalk.yaml: crosswalk between ATLAS techniques and LLM Top 10 risks'
+      - 'hypothesis_backlog_generator.py: emits a prioritised detection backlog from the mapping'
+      - 'atlas_test_scenarios.md: case-study-derived scenarios for rule unit tests'
+    security_preview: 'A TTP framework without an observability audit produces coverage claims for attacks the platform physically cannot see'
+
+  - section_number: 4
+    title: 'Detecting Prompt Injection: Regex, Classifier, and Hybrid Approaches'
+    filename: 'section_05_04_prompt_injection_detection.yaml'
+    estimated_pages: 6
+    topics:
+      - 'Direct vs indirect prompt injection as distinct detection problems'
+      - 'What regex can and cannot catch: known-pattern detection as the first layer'
+      - 'Expressing pattern-layer detections as Sigma rules over OCSF GenAI events'
+      - 'Classifier-based detection: training data design, feature strategy, and the classifier contract'
+      - 'Hybrid architecture: pattern layer, classifier layer, and decision logic'
+      - 'Precision/recall trade-offs and the false-positive economics of inline blocking'
+      - 'Indirect injection: detecting adversarial instructions in retrieved and tool-returned content'
+      - 'Unit and integration testing the injection stack per Chapter 3 discipline'
+    key_concepts:
+      - 'Layered detection stack'
+      - 'Classifier contract'
+      - 'Inline vs monitor-only placement'
+      - 'Indirect injection provenance'
+    deliverables:
+      - 'sigma_prompt_injection_rules.yml: pattern-layer Sigma rule pack tagged to LLM01'
+      - 'injection_classifier_contract.yaml: input/output contract and thresholds for the classifier layer'
+      - 'hybrid_decision_layer.py: combines pattern and classifier verdicts with configurable policy'
+      - 'injection_test_corpus.jsonl: labeled positive/negative/edge cases for CI'
+    security_preview: 'Teams that regex their way through prompt injection ship a detection that adversaries enumerate in an afternoon; teams that go classifier-only ship one they cannot explain to an analyst'
+
+  - section_number: 5
+    title: 'Jailbreak Detection: Pattern Libraries and Semantic Distance Methods'
+    filename: 'section_05_05_jailbreak_detection.yaml'
+    estimated_pages: 5
+    topics:
+      - 'Jailbreaks vs prompt injection: intent to defeat model policy vs intent to hijack application behavior'
+      - 'Jailbreak taxonomy: roleplay framing, obfuscation and encoding, multi-turn escalation, many-shot patterns'
+      - 'Pattern library design: curation, versioning, and decay of known jailbreak families'
+      - 'Semantic distance methods: embedding known jailbreak families and scoring proximity'
+      - 'Multi-turn detection: stateful correlation over conversation telemetry per the Chapter 2 correlation engine'
+      - 'Threshold setting with statistical baselining (forward reference to Chapter 10)'
+      - 'Keeping the library current without leaking an attack cookbook into the repo'
+    key_concepts:
+      - 'Pattern decay'
+      - 'Embedding-space proximity'
+      - 'Stateful conversation correlation'
+      - 'Defensive-only curation'
+    deliverables:
+      - 'jailbreak_pattern_library.yaml: versioned family-level library with metadata, defensively scoped'
+      - 'semantic_distance_scorer.py: embedding proximity scorer with pluggable model backend'
+      - 'multiturn_correlation_rule.yaml: stateful correlation spec for escalation sequences'
+      - 'jailbreak_eval_harness.py: measures library and scorer recall against a held-out corpus'
+    security_preview: 'A static jailbreak library is a snapshot of last quarter''s attacks; the detection is the update pipeline, not the file'
+
+  - section_number: 6
+    title: 'Training Data Poisoning Indicators: Supply Chain Detection'
+    filename: 'section_05_06_poisoning_supply_chain_detection.yaml'
+    estimated_pages: 4
+    topics:
+      - 'Poisoning as a supply-chain problem: datasets, fine-tunes, embeddings, and model artifacts as dependencies'
+      - 'Pipeline provenance telemetry: what the training and RAG ingestion paths must log'
+      - 'Indicator classes: source anomalies, distribution shifts, label anomalies, artifact integrity failures'
+      - 'Detecting RAG knowledge-base poisoning at ingestion time'
+      - 'Integrity verification: hashing, signing, and attestation for model and dataset artifacts'
+      - 'Mapping poisoning indicators to LLM04 and relevant ATLAS techniques'
+      - 'Honest limits: what poisoning detection cannot see after training completes'
+    key_concepts:
+      - 'Provenance-first telemetry'
+      - 'Ingestion-time detection'
+      - 'Artifact attestation'
+      - 'Post-training blindness'
+    deliverables:
+      - 'pipeline_provenance_schema.yaml: OCSF-aligned event schema for training and ingestion telemetry'
+      - 'sigma_poisoning_indicators.yml: rule pack for source, integrity, and ingestion anomalies'
+      - 'artifact_integrity_checker.py: hash and signature verification for datasets and model files'
+      - 'rag_ingestion_monitor.py: distribution and source checks on knowledge-base updates'
+    security_preview: 'Poisoning is cheapest for the attacker and hardest for the defender after the fact -- the only affordable detection point is the pipeline, before the artifact ships'
+
+  - section_number: 7
+    title: 'Model Extraction and API Abuse: Rate Anomaly Detection'
+    filename: 'section_05_07_extraction_api_abuse_detection.yaml'
+    estimated_pages: 4
+    topics:
+      - 'Extraction economics: why systematic querying looks like legitimate traffic one request at a time'
+      - 'Gateway telemetry for abuse detection: identity, rate, token accounting, and query diversity signals'
+      - 'Rate anomaly detection: per-identity baselines vs global thresholds'
+      - 'Query-pattern signals: coverage-maximising probes, temperature sweeps, and systematic enumeration'
+      - 'Unbounded consumption (LLM10): cost-based detection as a security signal'
+      - 'Stateful detection over time windows per the Chapter 2 correlation engine'
+      - 'Response options preview: rate limiting and revocation, deferred to Chapter 12 orchestration'
+    key_concepts:
+      - 'Per-identity baselining'
+      - 'Query diversity as signal'
+      - 'Cost anomalies as detections'
+      - 'Slow-burn correlation'
+    deliverables:
+      - 'sigma_api_abuse_rules.yml: gateway-log rule pack for rate and consumption anomalies'
+      - 'extraction_detector.py: per-identity baseline and query-diversity anomaly scorer'
+      - 'token_accounting_schema.yaml: consumption telemetry schema feeding cost-based detections'
+      - 'abuse_alert_playbook_stub.md: alert-to-response handoff contract, completed in Chapter 12'
+    security_preview: 'Extraction hides in the aggregate: no single request is malicious, so the detection must live in the baseline, not the rule threshold'
+
+  - section_number: 8
+    title: 'LLM Output Monitoring: PII Leakage, Toxicity, Data Exfiltration'
+    filename: 'section_05_08_llm_output_monitoring.yaml'
+    estimated_pages: 4
+    topics:
+      - 'The output channel as an attack surface: LLM02 sensitive information disclosure and LLM05 improper output handling'
+      - 'PII detection on completions: pattern, contextual, and classifier methods with jurisdictional scoping'
+      - 'Toxicity monitoring as a policy detection, distinct from security detection, and why both share the pipeline'
+      - 'Exfiltration through completions: markdown image beacons, encoded payloads, and tool-call side channels'
+      - 'System prompt leakage detection (LLM07): canary tokens and template fingerprinting'
+      - 'Placement decisions: inline redaction vs monitor-and-alert, and their latency costs'
+      - 'Privacy-safe monitoring: inspecting outputs without building a secondary sensitive-data store'
+    key_concepts:
+      - 'Output as telemetry'
+      - 'Canary-based leakage detection'
+      - 'Exfiltration side channels'
+      - 'Inline vs async inspection'
+    deliverables:
+      - 'output_monitoring_pipeline.py: staged completion inspection with pluggable checks'
+      - 'sigma_output_rules.yml: rule pack for leakage, beacon, and encoding indicators'
+      - 'system_prompt_canary_kit.py: canary insertion and leak-detection utilities'
+      - 'pii_check_contract.yaml: contract and jurisdiction configuration for the PII layer'
+    security_preview: 'Every completion the platform does not inspect is an unmonitored egress channel wearing a product feature''s clothing'
+
+  - section_number: 9
+    title: 'Production Architecture: AI Security Detection at API Gateway Scale'
+    filename: 'section_05_09_production_gateway_architecture.yaml'
+    note: 'Chapter capstone: assembles 5.4-5.8 detectors into one deployable architecture'
+    estimated_pages: 5
+    topics:
+      - 'The reference architecture: gateway integration points for pre-request, post-response, and async detection'
+      - 'Placement by latency budget: what runs inline, what runs near-real-time, what runs batch'
+      - 'Fail-open vs fail-closed policy per detector class'
+      - 'Normalisation flow: gateway events through the Chapter 4 OCSF layer into the Chapter 2 platform'
+      - 'Detection-as-code integration: shipping the chapter''s rule packs and classifiers through the Chapter 3 pipeline'
+      - 'Scale considerations preview: throughput and cost engineering deferred to Chapter 9'
+      - 'The assembled coverage picture: chapter detections mapped back onto the 5.2 matrix'
+    key_concepts:
+      - 'Latency-budgeted placement'
+      - 'Fail-policy per detector'
+      - 'Gateway as sensor'
+      - 'Coverage closure'
+    deliverables:
+      - 'gateway_detection_architecture.md: reference architecture with component and data-flow diagrams'
+      - 'placement_decision_matrix.yaml: detector -> tier -> latency budget -> fail policy'
+      - 'gateway_reference_config.yaml: deployable configuration wiring the chapter''s detectors'
+      - 'chapter5_coverage_closure_report.py: regenerates the 5.2 matrix with implemented-detection status'
+    security_preview: 'An AI security detector that adds unbounded latency to the request path will be removed by the platform team before it ever catches an attack -- placement is survival'
+
+  - section_number: 10
+    title: 'Chapter 5 Summary: AI Security Detection'
+    filename: 'section_05_10_chapter_summary.yaml'
+    note: 'Schema B (chapter summary section) per the Books Authoring schema set'
+    estimated_pages: 3
+    topics:
+      - 'Synthesis of the gap, the frameworks, the five detection families, and the gateway architecture'
+      - 'The completed coverage matrix as the chapter''s single artifact of record'
+      - 'What remains open: agentic (ASI) detection, and scale engineering deferred to Part III'
+      - 'Bridge to Chapter 6: modern attack surfaces beyond the LLM'
+    key_concepts:
+      - 'Coverage matrix as artifact of record'
+      - 'Deliberate deferrals'
+      - 'Part II continuity'
+    deliverables:
+      - 'Consolidated chapter deliverable index with file references'
+    security_preview: 'AI security detection is detection engineering with new telemetry, not a new discipline -- the lifecycle, the code discipline, and the open standards all carry over intact'
+
+estimated_totals:
+  total_sections: 10
+  content_sections: 9
+  summary_sections: 1
+  estimated_total_pages: 42
+  average_pages_per_section: 4.2
+  implementation_files: '35+ across rule packs, schemas, and Python modules'
+  code_examples: '40+'
+  detection_families: 5
+  coverage_frameworks: 2
+  sigma_rule_packs: 5
+  production_capstones: 1
+  part_context: 'Chapter 2 of 4 in Part II: Modern Detection'
+
+chapter_completion_criteria:
+  knowledge:
+    - 'Explain the five structural reasons traditional detection rules cannot cover LLM applications'
+    - 'Name the ten OWASP LLM Top 10 (2025) risks and classify each by detectability'
+    - 'Describe how MITRE ATLAS techniques translate into detection hypotheses and where observability limits coverage'
+    - 'Explain the layered prompt injection stack and why neither regex-only nor classifier-only survives production'
+    - 'Distinguish jailbreak detection from injection detection and describe semantic-distance methods'
+    - 'Describe poisoning as a supply-chain detection problem and the pipeline provenance telemetry it requires'
+    - 'Explain why extraction detection lives in per-identity baselines rather than per-request rules'
+    - 'Name the output-channel risks and the placement trade-off between inline redaction and async monitoring'
+    - 'Describe the gateway-scale architecture: placement tiers, latency budgets, and fail policies'
+  skills:
+    - 'Run the telemetry gap assessment against an environment and produce the detection gap scorecard'
+    - 'Build and maintain the OWASP LLM Top 10 coverage matrix as a living artifact'
+    - 'Author Sigma rules over OCSF GenAI events for pattern-layer LLM detections'
+    - 'Specify a classifier contract and wire a hybrid decision layer with tested thresholds'
+    - 'Implement semantic-distance jailbreak scoring with a versioned pattern library'
+    - 'Instrument a training or RAG pipeline with provenance telemetry and integrity checks'
+    - 'Build per-identity rate and consumption baselines over gateway logs'
+    - 'Deploy staged output monitoring with canary-based system prompt leakage detection'
+    - 'Produce a placement decision matrix assigning every detector a tier, budget, and fail policy'
+    - 'Ship the chapter rule packs and classifiers through the Chapter 3 CI/CD pipeline'
+  security_mindset:
+    - 'Treat missing telemetry as a hundred-percent false-negative rate, not an acceptable unknown'
+    - 'Measure coverage per attack class against a versioned framework, never per rule count'
+    - 'Assume adversaries enumerate static patterns; design the update pipeline as the detection'
+    - 'Respect the privacy cost of prompt and output logging as a first-class design constraint'
+    - 'Treat detector latency as a survival constraint: an unplaceable detection protects nothing'
+
+metadata:
+  creation_date: '2026-07-14'
+  author: 'Raghav Dinesh'
+  book_version: '2.0'
+  previous_chapter: 'Chapter 4: SIEM-Agnostic Detection: OCSF and Sigma'
+  next_chapter: 'Chapter 6: Detection for Modern Attack Surfaces: Cloud, API, Serverless'
+  part_context: 'Part II: Modern Detection'
+  total_yaml_files: 11
+  external_references:
+    - 'github.com/ruwgxo/ai-security-mastery (ML foundations and AI security deep treatment)'
+    - 'OWASP LLM Top 10, 2025 edition (v2.0) -- re-verify version before 2026-Q4 publication'
+    - 'MITRE ATLAS -- verify current technique inventory before publication; do not cite counts from memory'
+    - 'OWASP Top 10 for Agentic Applications (ASI) 2026 -- forward reference only'
+  cross_chapter_dependencies:
+    - 'Chapter 1: detection lifecycle and framework-as-coverage-map discipline (1.2, 1.4)'
+    - 'Chapter 2: correlation engine statefulness for multi-turn and slow-burn detections (2.3)'
+    - 'Chapter 3: rule schema, testing, and CI/CD pipeline for all chapter rule packs (3.3-3.6)'
+    - 'Chapter 4: OCSF normalisation layer and Sigma authoring underpinning every detection (4.2-4.6)'
+    - 'Chapter 7: classifier detectors generalised into behavioral analytics (7.4-7.6)'
+    - 'Chapter 9: gateway architecture meets billion-event performance engineering (9.1-9.4)'
+    - 'Chapter 10: statistical baselining for jailbreak and abuse thresholds (10.3)'
+    - 'Chapter 12: alert-to-response handoff for containment of extraction and abuse (12.5)'
