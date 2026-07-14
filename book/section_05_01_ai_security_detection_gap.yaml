@@ -1,0 +1,880 @@
+# section_05_01_ai_security_detection_gap.yaml
+
+---
+document_info:
+  title: 'The AI Security Detection Gap: Why Existing Rules Do Not Cover LLMs'
+  chapter: 5
+  section: 1
+  section_code: '0501'
+  author: Raghav Dinesh
+  github: https://github.com/ruwgxo/detection-engineering-at-scale
+  license: MIT
+  version: '1.0'
+  created: '2026-07-14'
+  estimated_pages: 5
+  estimated_reading_time: 35-45 minutes
+
+section_overview:
+  one_line_summary: >-
+    Detection programs with strong endpoint, network, and cloud coverage are structurally
+    blind to LLM attacks because the attack payload is natural language inside an allowed
+    operation: the gap lives at the telemetry layer, not the rule layer, and closing it
+    starts with capturing and normalising the prompt channel, not with writing more rules.
+  why_this_section_exists: |-
+    Chapter 4 left the reader with a SIEM-agnostic detection layer: OCSF normalisation at
+    ingest and Sigma as the platform-independent rule language. The natural next move is to
+    point that layer at a new attack surface and start writing rules. This section exists
+    to stop that move before it fails. Every rule in the reader's library, and every rule
+    they could write against their current telemetry, operates on events their pipeline
+    already sees -- and LLM-layer attacks produce none of those events. A prompt injection
+    is an HTTPS POST to an approved endpoint from an authenticated identity carrying a
+    well-formed JSON body. Endpoint telemetry records a normal process. Network telemetry
+    records an allowed TLS session. Cloud telemetry records a successful API call. The
+    attack is invisible not because a rule is missing but because the event that would
+    trigger it is never generated. This section names that gap precisely, inventories the
+    telemetry that must exist before any detection in this chapter can run, and gives the
+    reader the tooling to measure their own gap. Everything else in Chapter 5 is a response
+    to a blind spot this section makes visible.
+  position_in_chapter: |-
+    Section 5.01 is the framing anchor for Chapter 5, playing the role the taxonomy anchors
+    play elsewhere in the book: every later section answers a gap named here. Sections 5.02
+    and 5.03 turn the gap into a measurable coverage map using the OWASP LLM Top 10 and
+    MITRE ATLAS. Sections 5.04 through 5.08 build the detectors for each attack class this
+    section inventories. Section 5.09 deploys them at gateway scale on the telemetry
+    foundation this section specifies, and Section 5.10 consolidates the chapter. Readers
+    who skip 5.01 will build rules with nothing to fire on.
+
+learning_objectives:
+  knowledge:
+  - Explain why detection programs with mature endpoint, network, and cloud coverage produce
+    zero alerts on LLM-layer attacks, and why this is a telemetry problem rather than a rule problem
+  - Name the five structural mismatches between traditional detection assumptions and LLM
+    application reality
+  - Explain the collapse of the data/instruction boundary in LLM applications and why it defeats
+    the syntactic detection logic that works for injection attacks in other domains
+  - 'Enumerate the LLM attack surface from a detection standpoint: prompts, completions, system
+    prompts, RAG context, tool calls, training pipeline, and model APIs'
+  - State the mandatory LLM telemetry inventory and the source that emits each event type
+  - Describe the privacy constraints on prompt and completion logging and the controls that
+    make the telemetry defensible
+  - Explain how LLM telemetry maps into the Chapter 4 OCSF normalisation layer and why the
+    events must land in the same platform as every other domain
+  skills:
+  - Run a telemetry gap assessment that scores existing log sources against the LLM telemetry
+    inventory and produces a defensible gap report
+  - Produce a machine-readable attack surface map linking each LLM attack class to the telemetry
+    it requires and the detection method family that covers it
+  - Draft an OCSF-aligned gateway event schema for prompt and completion telemetry with privacy
+    controls designed in from the first field
+  - Communicate the LLM detection gap to platform stakeholders using coverage language rather
+    than product language
+  security_mindset:
+  - Distrust a green coverage dashboard until the telemetry underneath it is verified to exist
+    for the surface being claimed
+  - 'Assume the attacker operates entirely inside allowed operations: authenticated, authorised,
+    well-formed, and hostile'
+  - Treat semantic payloads as a different detection problem from syntactic payloads and refuse
+    to reuse syntactic instincts unexamined
+  - Treat telemetry acquisition as the first detection engineering task on any new surface,
+    before hypothesis and rule work begins
+
+prerequisites:
+- 'Chapter 1: the detection lifecycle (1.2) and ATT&CK-as-architecture coverage mapping (1.4)'
+- 'Chapter 2: the four-layer platform model and the correlation engine (stateful vs stateless)'
+- 'Chapter 3: detection-as-code -- rule schema, unit testing, CI/CD pipeline'
+- 'Chapter 4: OCSF normalisation layer and production Sigma rule authoring'
+- 'Working Python: the classifier and telemetry deliverables assume comfort with Python 3.12+'
+- 'No prior ML security background assumed; deeper ML foundations live in the companion repo
+  ruwgxo/ai-security-mastery'
+
+prose_content:
+  part_1:
+    title: 'The Blind Spot: A Mature Program Meets an Invisible Attack'
+    body: |-
+      Consider a detection program most teams would envy. Endpoint telemetry streams from
+      every host. Network sensors watch every segment. Cloud control plane logs flow from
+      every account. The ATT&CK coverage map from Chapter 1 shows healthy technique coverage,
+      the Chapter 3 pipeline tests every rule before deployment, and the Chapter 4
+      normalisation layer means a SIEM migration would not cost a single detection. Now run
+      one attack through it: a user pastes a document into the company's internal LLM
+      assistant, and buried in that document is an instruction that redirects the model to
+      summarise and return the confidential context it was given from another data source.
+
+      Walk the telemetry. The endpoint agent sees a browser process that has been running
+      since morning. The network sensor sees a TLS session to an approved internal service.
+      The cloud log records a successful, authenticated API call to the model endpoint --
+      status 200, normal latency, normal size. The identity provider logged a valid session
+      hours ago. Every layer of a mature stack observed this attack and recorded it as
+      normal, because by every definition those layers understand, it was normal. Nothing
+      was exploited. No permission was exceeded. No signature existed to miss.
+
+      This is the AI security detection gap, and the first thing to understand about it is
+      what it is not. It is not a missing rule, because no expressible rule over these events
+      distinguishes the attack from routine use. It is not an immature product category to
+      wait out. It is the absence of an entire event domain: the prompt channel -- what was
+      asked, what context was assembled, what the model answered, what tools it invoked --
+      generates no telemetry in a traditional pipeline. The attack lives entirely inside
+      that unobserved channel. A detection platform that cannot see the prompt channel has
+      a false-negative rate of one hundred percent on this surface, and no dashboard will
+      ever say so.
+  part_2:
+    title: 'Five Structural Mismatches Between Traditional Detection and LLM Reality'
+    body: |-
+      The gap is structural: five assumptions that hold across endpoint, network, and cloud
+      detection fail simultaneously at the LLM layer. Naming them precisely matters, because
+      each one invalidates a specific detection instinct the reader has spent years building.
+
+      First, the payload is semantic, not syntactic. Traditional injection detection works
+      because attack syntax differs from legitimate syntax: a SQL metacharacter in a form
+      field, a shell operator in a filename. Prompt injection has no metacharacters. The
+      attack is well-formed natural language whose hostility is a property of its meaning
+      in context, and meaning does not regex. Second, the attack operates inside allowed
+      operations. There is no privilege escalation to observe, no policy violation to log:
+      an authenticated user invoked an approved endpoint with a well-formed request. The
+      access control layer, which anchors most cloud detection, is satisfied throughout.
+
+      Third, the perimeter of intent has moved inside the request body. Network detection
+      assumes the interesting boundary is between zones; here the boundary between benign
+      and hostile runs through the middle of a single JSON field. Fourth, the attacker may
+      not be the user. Indirect injection plants the payload in content the application
+      itself retrieves -- a webpage, a document in the RAG corpus, an email the assistant
+      reads -- so the malicious instruction enters through a channel the identity layer
+      attributes to a trusted system component. Fifth, the asset under attack can be
+      upstream of runtime entirely: a poisoned dataset or tampered fine-tune compromises
+      the model before the first production request, in pipelines that emit no security
+      telemetry at all. Each mismatch reappears as a design constraint in a later section;
+      together they explain why this chapter starts at ingest rather than at rules.
+  part_3:
+    title: 'The Deepest Mismatch: The Data/Instruction Boundary Collapse'
+    body: |-
+      One of the five mismatches deserves its own treatment, because it is the mechanism
+      behind the chapter's two hardest detection problems. Every other computing layer the
+      reader defends maintains an architectural separation between instructions and data.
+      A CPU distinguishes executable regions from data regions. A SQL engine distinguishes
+      the query from its parameters -- which is precisely why parameterised queries kill
+      SQL injection. Detection engineering leans on this separation constantly: if data
+      arrives where instructions belong, that boundary crossing is the observable event.
+
+      An LLM has no such boundary. The model consumes one token stream in which the system
+      prompt, the user's message, the retrieved documents, and the tool results are
+      distinguished only by convention -- delimiters and role labels that are themselves
+      just tokens. Anything in the context window can function as an instruction if the
+      model treats it as one. This is not an implementation defect awaiting a patch; it is
+      how the architecture works. The practical consequence for detection is that "data
+      containing instructions" -- the definitional signature of injection in every other
+      domain -- is not an anomaly here. It is every request. A retrieved document that says
+      "ignore previous instructions" and a retrieved document that quotes a security blog
+      discussing that phrase are syntactically identical events.
+
+      Detection at this layer therefore cannot ask "did data cross into the instruction
+      channel" and must instead ask "does this content, in this context, attempt to redirect
+      the model" -- a semantic judgement with an irreducible error rate. That single shift
+      drives the chapter's architecture: it is why Section 5.4 layers cheap syntactic
+      prefilters under semantic classifiers instead of trusting either alone, why Section
+      5.5 measures pattern library decay instead of assuming signatures hold, and why
+      Section 5.9 budgets for scoring latency in the request path. The reader should carry
+      this forward as a standing calibration: on this surface, perfect detection is not on
+      the menu, and the engineering goal is measured error rates, not certainty.
+  part_4:
+    title: 'The LLM Attack Surface, Inventoried for Detection'
+    body: |-
+      With the mismatches named, the surface can be inventoried the way a detection engineer
+      needs it: not as a list of vulnerabilities but as a map of attack classes to the
+      observation points that could witness them. An LLM application has seven components
+      that matter here. The user prompt channel carries direct injection and jailbreak
+      attempts. The system prompt is a theft target -- extraction of it leaks application
+      logic and any embedded secrets. The retrieval layer (RAG corpus, web fetches,
+      connected documents) carries indirect injection, where the payload arrives in content
+      the application trusts by construction. The completion channel -- the model's output
+      -- carries PII leakage, policy evasion evidence, and exfiltration payloads. Tool and
+      function calls turn a hijacked model into an agent acting on real systems, making
+      tool invocation telemetry an action log, not a debug log. The model API surface
+      carries extraction and quota abuse, visible only as statistical patterns across many
+      requests. And the training pipeline -- datasets, fine-tuning jobs, model registries --
+      carries poisoning and supply chain tampering, upstream of every runtime control.
+
+      Two properties of this inventory shape everything downstream. Observation points do
+      not line up one-to-one with attack classes: the gateway sees prompts and completions
+      but not the pipeline; the pipeline sees provenance but nothing about runtime abuse;
+      extraction is visible at neither individual request, only in aggregate at the
+      correlation layer. Coverage must therefore be measured per attack class against the
+      specific telemetry that class requires -- which is exactly the coverage map Sections
+      5.2 and 5.3 build. Second, the inventory is the chapter's table of contents: direct
+      injection and jailbreaks (5.4, 5.5), pipeline poisoning (5.6), extraction and API
+      abuse (5.7), completion-side monitoring (5.8), and the gateway architecture that
+      hosts it all (5.9).
+  part_5:
+    title: 'The Mandatory Telemetry Inventory and Its Privacy Constraints'
+    body: |-
+      Everything the chapter builds runs on events that do not exist yet in most pipelines,
+      so the telemetry inventory is the section's central engineering artifact. Five event
+      families are mandatory. Prompt events: the full user input, plus every piece of
+      content assembled into the context window -- system prompt version, retrieved
+      documents with their source identifiers, conversation history references. Completion
+      events: the model's full output with model and parameter identifiers, linked to the
+      prompt event that produced them. Token accounting events: input and output token
+      counts per request per identity, which Section 5.7 turns into the cheapest extraction
+      signal available. Tool call events: every function invocation the model requested,
+      with arguments and results, captured as first-class actions. Pipeline provenance
+      events: dataset ingestion, fine-tuning job execution, model registry mutation --
+      the upstream family Section 5.6 depends on. The natural emission point for the first
+      four is an LLM gateway in front of the model endpoint; the fifth comes from CI/CD
+      and MLOps tooling. If no gateway exists, deploying one is the first detection
+      engineering task on this surface -- before any rule is written.
+
+      This inventory has a property no other telemetry in this book has: prompts and
+      completions are content, not metadata, and they will contain personal data, health
+      details, credentials pasted by careless users, and privileged business information.
+      Logging them creates a high-value secondary target and a regulatory surface in the
+      same act. The constraints are therefore design inputs, not afterthoughts: field-level
+      controls that separate loggable metadata from restricted content, inline redaction
+      or tokenisation of identified sensitive spans before storage, retention windows
+      measured in days for raw content versus months for metadata, access partitioning so
+      detection queries run against redacted views by default, and a documented lawful
+      basis for the processing. The event schema in this section's third deliverable bakes
+      these controls into the structure itself, because a privacy control that depends on
+      every future query author remembering it is not a control.
+  part_6:
+    title: 'Normalising the New Telemetry and Reading the Chapter as a Response to the Gap'
+    body: |-
+      The final move is the one Chapter 4 trained for: the new event families must land in
+      the platform as normalised, schema-conformant events, not as a bespoke side channel.
+      OCSF's extension model accommodates GenAI-shaped events, and the mapping discipline
+      is identical to Chapter 4's -- define the event class, map every gateway field to a
+      schema attribute, and version the mapping as code. What matters more than the
+      specific class numbers, which the reader should verify against the current OCSF
+      release rather than any book, is the architectural rule: prompt events, completion
+      events, and pipeline events flow through the same ingest, normalise, correlate, alert
+      path as authentication and network events. The alternative -- a standalone AI
+      security tool with its own console -- recreates the SIEM lock-in problem of Section
+      4.1 on a newer surface, and guarantees that cross-domain correlations (an injection
+      attempt followed by anomalous tool calls under the same identity, say) are structurally
+      impossible to express.
+
+      Normalised telemetry also makes the gap itself measurable, which is where this
+      section lands. The gap assessment deliverable scores a real pipeline against the
+      mandatory inventory and produces the scorecard that tells platform stakeholders, in
+      coverage language, what the program currently cannot see. From here the chapter
+      unfolds as a response: Sections 5.2 and 5.3 convert the invisible surface into a
+      tracked coverage map using the OWASP LLM Top 10 and MITRE ATLAS; Sections 5.4 through
+      5.8 build the detector families the map calls for; Section 5.9 assembles them into a
+      gateway architecture with explicit latency and failure budgets. The discipline is
+      unchanged from the rest of the book -- telemetry first, framework as coverage map,
+      rules as code, measured quality. Only the surface is new.
+
+reference_materials:
+  table_1:
+    title: 'Why Each Traditional Telemetry Layer Records an LLM Attack as Normal'
+    description: >-
+      The blind spot walked layer by layer: what each mature telemetry source observes
+      during a prompt injection attack and why that observation triggers nothing.
+    columns:
+    - Telemetry layer
+    - What it observes during the attack
+    - Why no detection fires
+    - What it would need to see instead
+    rows:
+    - - Endpoint (EDR)
+      - Browser or client process in normal operation; no new process, no file write, no
+        persistence mechanism
+      - All process-, file-, and memory-level signatures assume attacker code executes on
+        the host; here nothing executes
+      - Nothing at this layer can help; the attack never touches the endpoint's abstraction
+        level
+    - - Network (NDR / flow)
+      - Allowed TLS session to an approved internal service, normal volume and timing
+      - Payload is encrypted; even with TLS inspection the body is well-formed JSON to an
+        allowed endpoint
+      - Visibility inside the request body plus semantic judgement of natural language --
+        neither is a network-layer capability
+    - - Cloud control plane
+      - Successful authenticated API call, status 200, normal latency and size
+      - The call is authorised and well-formed; control plane logs record that an operation
+        happened, not what it meant
+      - Data-plane content telemetry (the prompt channel), which control plane logging is
+        explicitly not designed to carry
+    - - Identity (IdP / IAM)
+      - Valid session, correct MFA, expected role, no privilege change
+      - The attacker operates within a legitimate identity's normal entitlements -- or is
+        not a user at all (indirect injection)
+      - Attribution of context-window content to its true source, which requires gateway
+        telemetry, not identity telemetry
+  table_2:
+    title: 'The Five Structural Mismatches and Where the Chapter Answers Each'
+    description: >-
+      Each mismatch between traditional detection assumptions and LLM application reality,
+      the detection instinct it invalidates, and the section that responds to it.
+    columns:
+    - Structural mismatch
+    - Detection instinct it invalidates
+    - Chapter response
+    rows:
+    - - Semantic payloads, not syntactic
+      - Signature and regex matching as sufficient coverage for injection attacks
+      - '5.4: regex demoted to prefilter tier under classifier scoring; both measured'
+    - - Attacks inside allowed operations
+      - Policy violation and privilege escalation as the alertable moment
+      - '5.7: behavioural baselines that define normal within authorised use'
+    - - Intent boundary inside the request body
+      - Zone and perimeter crossings as the interesting network events
+      - '5.9: the LLM gateway as the new observation point on the request path'
+    - - Attacker may not be the user (indirect injection)
+      - Identity attribution as a reliable proxy for payload origin
+      - '5.4: scoring all context-window content, with source tagging in the event schema'
+    - - Compromise upstream of runtime (poisoning)
+      - Production traffic as the complete detection surface
+      - '5.6: pipeline provenance telemetry and stage-boundary integrity gates'
+  table_3:
+    title: 'LLM Attack Surface to Telemetry to Detection Method'
+    description: >-
+      The attack surface inventory as a detection map: each attack class, the telemetry
+      family that can witness it, its observation point, and the detection method family
+      the chapter builds for it.
+    columns:
+    - Attack class
+    - Required telemetry family
+    - Observation point
+    - Detection method family (section)
+    rows:
+    - - Direct prompt injection
+      - Prompt events (full user input)
+      - LLM gateway, inline
+      - 'Regex prefilter + classifier hybrid (5.4)'
+    - - Indirect injection via retrieved content
+      - Prompt events (full assembled context with source tags)
+      - LLM gateway + retrieval layer
+      - 'Context-wide scoring with source attribution (5.4)'
+    - - Jailbreak / guardrail evasion
+      - Prompt events + conversation state
+      - LLM gateway, stateful
+      - 'Pattern library + semantic distance, multi-turn (5.5)'
+    - - Training data poisoning / supply chain tampering
+      - Pipeline provenance events
+      - CI/CD and MLOps pipeline
+      - 'Stage-boundary integrity gates + canaries (5.6)'
+    - - Model extraction / API abuse
+      - Token accounting + request metadata across identities
+      - Correlation layer (aggregate)
+      - 'Volume-diversity-coverage baselines (5.7)'
+    - - Output-side leakage and exfiltration
+      - Completion events
+      - LLM gateway + correlation layer
+      - 'PII/policy scoring + cross-turn correlation (5.8)'
+    - - Agent abuse via tool calls
+      - Tool call events (arguments and results)
+      - LLM gateway / orchestrator
+      - 'Action-log rules on tool telemetry (5.8, 5.9)'
+  table_4:
+    title: 'Mandatory LLM Telemetry Inventory with Privacy Classification'
+    description: >-
+      The five mandatory event families, the source that emits each, the sections that
+      consume them, and the privacy handling class each requires in the event schema.
+    columns:
+    - Event family
+    - Emitting source
+    - Primary consumers
+    - Privacy handling class
+    rows:
+    - - Prompt events (input + assembled context with source tags)
+      - LLM gateway
+      - '5.4, 5.5'
+      - 'Restricted content: inline redaction, short raw retention, partitioned access'
+    - - Completion events (full model output, linked to prompt)
+      - LLM gateway
+      - '5.8'
+      - 'Restricted content: same controls as prompts; leakage findings escalate handling'
+    - - Token accounting (per request, per identity)
+      - LLM gateway / billing plane
+      - '5.7'
+      - 'Metadata: standard platform retention, no content'
+    - - Tool call events (function, arguments, results)
+      - Gateway / agent orchestrator
+      - '5.8, 5.9'
+      - 'Mixed: arguments may embed restricted content; field-level classification required'
+    - - Pipeline provenance (datasets, fine-tune jobs, registry mutations)
+      - CI/CD and MLOps tooling
+      - '5.6'
+      - 'Metadata with integrity requirements: tamper-evident storage preferred'
+
+deliverables:
+  deliverable_1:
+    title: 'LLM Telemetry Gap Assessment'
+    filename: llm_telemetry_gap_assessment.py
+    description: >-
+      Scores an existing detection pipeline against the mandatory LLM telemetry inventory.
+      Takes a YAML declaration of currently onboarded log sources and their fields, checks
+      each mandatory event family for presence, completeness, and consumability, and emits
+      a per-family gap score with the specific missing fields. Output feeds deliverable 4.
+    implementation_notes: >-
+      Presence alone is scored at most partial: a source that logs prompt text without
+      context source tags cannot support indirect injection detection and the assessment
+      says so explicitly. Scoring is deliberately conservative -- unknown or undeclared
+      fields count as absent, because undocumented telemetry cannot be depended on by a
+      detection program. Extend REQUIREMENTS as later sections add event needs; the
+      structure is data, not code, so pull requests against it are reviewable by non-developers.
+    code: |
+      #!/usr/bin/env python3
+      """Score existing log sources against the mandatory LLM telemetry inventory.
+
+      Usage: llm_telemetry_gap_assessment.py sources.yaml [-o gap_report.yaml]
+      """
+      from __future__ import annotations
+
+      import argparse
+      import sys
+      from dataclasses import dataclass, field
+
+      import yaml
+
+      # Mandatory inventory: event family -> fields required for the chapter's detections.
+      # Section references indicate which detector is blocked when a field is missing.
+      REQUIREMENTS: dict[str, dict[str, str]] = {
+          "prompt_events": {
+              "user_input_full": "5.4 direct injection scoring",
+              "context_sources_tagged": "5.4 indirect injection attribution",
+              "system_prompt_version": "5.2 coverage map / change correlation",
+              "conversation_id": "5.5 multi-turn jailbreak state",
+              "identity_id": "cross-domain correlation (all sections)",
+          },
+          "completion_events": {
+              "output_full": "5.8 leakage and exfiltration detection",
+              "prompt_event_link": "5.8 cross-turn correlation",
+              "model_id_and_params": "5.6 canary drift attribution",
+          },
+          "token_accounting": {
+              "input_tokens": "5.7 extraction baselining",
+              "output_tokens": "5.7 extraction baselining",
+              "identity_id": "5.7 per-identity baselines",
+          },
+          "tool_call_events": {
+              "function_name": "5.8/5.9 agent action log",
+              "arguments": "5.8 abuse-in-arguments detection",
+              "result_status": "5.9 action outcome correlation",
+          },
+          "pipeline_provenance": {
+              "dataset_ingest_events": "5.6 supply chain gates",
+              "finetune_job_events": "5.6 pipeline monitoring",
+              "registry_mutation_events": "5.6 model integrity",
+          },
+      }
+
+
+      @dataclass
+      class FamilyScore:
+          family: str
+          present_fields: list[str] = field(default_factory=list)
+          missing_fields: list[str] = field(default_factory=list)
+
+          @property
+          def score(self) -> float:
+              total = len(self.present_fields) + len(self.missing_fields)
+              return round(len(self.present_fields) / total, 2) if total else 0.0
+
+          @property
+          def status(self) -> str:
+              if not self.present_fields:
+                  return "ABSENT"
+              return "COMPLETE" if not self.missing_fields else "PARTIAL"
+
+
+      def assess(declared_sources: dict) -> list[FamilyScore]:
+          """Conservative scoring: a field counts only if explicitly declared."""
+          declared: dict[str, set[str]] = {
+              fam: set(spec.get("fields", []))
+              for fam, spec in declared_sources.get("event_families", {}).items()
+          }
+          results = []
+          for family, fields_required in REQUIREMENTS.items():
+              have = declared.get(family, set())
+              fs = FamilyScore(family=family)
+              for fname, blocked_detection in fields_required.items():
+                  if fname in have:
+                      fs.present_fields.append(fname)
+                  else:
+                      fs.missing_fields.append(f"{fname} (blocks: {blocked_detection})")
+              results.append(fs)
+          return results
+
+
+      def main() -> int:
+          ap = argparse.ArgumentParser()
+          ap.add_argument("sources_yaml")
+          ap.add_argument("-o", "--output", default="gap_report.yaml")
+          args = ap.parse_args()
+
+          with open(args.sources_yaml) as fh:
+              declared = yaml.safe_load(fh) or {}
+
+          results = assess(declared)
+          report = {
+              "llm_telemetry_gap_report": [
+                  {
+                      "family": r.family,
+                      "status": r.status,
+                      "score": r.score,
+                      "missing": r.missing_fields,
+                  }
+                  for r in results
+              ],
+              "overall_readiness": round(
+                  sum(r.score for r in results) / len(results), 2
+              ),
+          }
+          with open(args.output, "w") as fh:
+              yaml.safe_dump(report, fh, sort_keys=False)
+
+          worst = min(results, key=lambda r: r.score)
+          print(f"Overall readiness: {report['overall_readiness']}")
+          print(f"Weakest family: {worst.family} ({worst.status})")
+          return 0 if report["overall_readiness"] == 1.0 else 1
+
+
+      if __name__ == "__main__":
+          sys.exit(main())
+  deliverable_2:
+    title: 'LLM Attack Surface Map'
+    filename: llm_attack_surface_map.yaml
+    description: >-
+      Machine-readable form of the attack surface inventory: each attack class mapped to
+      its required telemetry family, observation point, detection method family, and
+      covering section. This is the seed artifact the Section 5.2 coverage map extends
+      with framework mappings and live status.
+    implementation_notes: >-
+      Kept as data on purpose: the Section 5.2 coverage map, the Section 5.3 ATLAS mapping,
+      and the platform coverage queries all join against attack_class keys defined here.
+      Changing a key is a breaking change to downstream artifacts and belongs in a reviewed
+      pull request, per the Chapter 3 lifecycle.
+    code: |
+      # llm_attack_surface_map.yaml
+      # Seed artifact for the Chapter 5 coverage map. Keys are stable identifiers.
+      attack_surface_map:
+        direct_prompt_injection:
+          description: Hostile instructions delivered in the user prompt channel
+          required_telemetry: prompt_events
+          observation_point: llm_gateway_inline
+          detection_family: regex_prefilter_plus_classifier_hybrid
+          covered_in: '5.4'
+        indirect_prompt_injection:
+          description: Hostile instructions embedded in retrieved or connected content
+          required_telemetry: prompt_events_with_context_source_tags
+          observation_point: llm_gateway_plus_retrieval_layer
+          detection_family: context_wide_scoring_with_source_attribution
+          covered_in: '5.4'
+        jailbreak_guardrail_evasion:
+          description: Manipulating model behaviour past its safety boundaries
+          required_telemetry: prompt_events_plus_conversation_state
+          observation_point: llm_gateway_stateful
+          detection_family: pattern_library_plus_semantic_distance
+          covered_in: '5.5'
+        training_data_poisoning:
+          description: Dataset or fine-tune tampering upstream of deployment
+          required_telemetry: pipeline_provenance
+          observation_point: cicd_mlops_pipeline
+          detection_family: stage_boundary_integrity_gates_plus_canaries
+          covered_in: '5.6'
+        model_extraction_api_abuse:
+          description: Distillation-style querying, quota fraud, resale proxying
+          required_telemetry: token_accounting_plus_request_metadata
+          observation_point: correlation_layer_aggregate
+          detection_family: volume_diversity_coverage_baselines
+          covered_in: '5.7'
+        output_leakage_exfiltration:
+          description: PII leakage, policy evasion, exfiltration via completions
+          required_telemetry: completion_events
+          observation_point: llm_gateway_plus_correlation_layer
+          detection_family: content_scoring_plus_cross_turn_correlation
+          covered_in: '5.8'
+        agent_tool_abuse:
+          description: Hijacked model driving real actions through tool calls
+          required_telemetry: tool_call_events
+          observation_point: gateway_or_agent_orchestrator
+          detection_family: action_log_rules
+          covered_in: '5.8-5.9'
+  deliverable_3:
+    title: 'OCSF-Aligned GenAI Gateway Event Schema'
+    filename: ocsf_genai_event_schema.yaml
+    description: >-
+      Gateway event schema for prompt and completion telemetry, structured for OCSF
+      normalisation per the Chapter 4 layer, with privacy controls expressed as schema
+      structure: content fields carry handling classes, redaction status, and retention
+      tiers as mandatory attributes rather than as external policy.
+    implementation_notes: >-
+      Verify attribute names against the current OCSF release before implementation --
+      the schema evolves and this book deliberately does not freeze class numbers (see
+      book market_currency policy). The invariant to preserve is structural: metadata and
+      restricted content live in separate branches, every content field carries
+      privacy.handling_class and privacy.redaction_status, and detection views are built
+      on the metadata branch plus redacted content only.
+    code: |
+      # ocsf_genai_event_schema.yaml
+      # Gateway emission schema for prompt/completion events, OCSF-normalisation-ready.
+      # Privacy controls are schema structure, not external policy.
+      genai_gateway_event:
+        event_metadata:                # Privacy class: metadata (standard retention)
+          event_id: uuid
+          event_type: enum [prompt, completion, tool_call]
+          timestamp: rfc3339
+          gateway_instance: string
+          model_id: string
+          model_params: {temperature: float, max_tokens: int}
+          identity:
+            user_id: string           # platform identity, joins to IdP telemetry
+            session_id: string
+            conversation_id: string   # required for 5.5 multi-turn state
+          token_accounting:
+            input_tokens: int
+            output_tokens: int
+          links:
+            prompt_event_id: uuid     # completions link back to their prompt
+        restricted_content:            # Privacy class: restricted (short retention, partitioned)
+          user_input:
+            raw_ref: vault_pointer    # raw content stored out-of-band, tokenised pointer here
+            redacted_text: string     # inline-redacted copy; default surface for detection
+            privacy:
+              handling_class: restricted
+              redaction_status: enum [redacted, pending, exempt]
+              retention_tier: short   # days, per policy; metadata branch retains longer
+          context_window:
+            - source_type: enum [system_prompt, rag_document, web_fetch, history, tool_result]
+              source_id: string       # required for 5.4 indirect injection attribution
+              redacted_text: string
+              privacy: {handling_class: restricted, redaction_status: enum, retention_tier: short}
+          completion:
+            raw_ref: vault_pointer
+            redacted_text: string
+            privacy: {handling_class: restricted, redaction_status: enum, retention_tier: short}
+        detection_annotations:         # appended by detection tiers, never by the gateway
+          scores: []                  # e.g. {detector: injection_classifier_v3, score: 0.91}
+          verdicts: []
+      access_model:
+        default_detection_view: event_metadata + restricted_content.*.redacted_text
+        raw_content_access: break-glass, audited, incident-scoped
+      lawful_basis_note: >
+        Document the processing basis for prompt/completion logging with counsel before
+        enabling capture; the schema supports the controls but does not substitute for them.
+  deliverable_4:
+    title: 'Detection Gap Scorecard'
+    filename: detection_gap_scorecard.md
+    description: >-
+      Stakeholder-facing template that turns the gap assessment output into coverage
+      language for platform owners and leadership: what the program cannot currently see,
+      what attack classes that blindness maps to, and what telemetry investment closes
+      each gap. Written to be regenerated from deliverable 1 output on every assessment run.
+    implementation_notes: >-
+      Deliberately frames everything as coverage and telemetry, never as product
+      procurement: the decision this scorecard supports is "which event families do we
+      onboard next", which keeps the conversation inside the detection program. The
+      severity language is pre-agreed wording, not per-run judgement, so successive
+      scorecards are comparable. Pairs with the Chapter 15 executive communication
+      patterns when the audience is budget holders.
+    code: |
+      # LLM Detection Coverage Gap Scorecard
+
+      **Assessment date:** {{ assessment_date }}
+      **Pipeline assessed:** {{ pipeline_name }}
+      **Overall LLM telemetry readiness:** {{ overall_readiness }} / 1.00
+
+      ## What this measures
+
+      Whether the detection platform can currently *see* the LLM attack surface.
+      A detection program cannot cover attack classes for which it captures no
+      telemetry, regardless of rule quality. Scores come from
+      `llm_telemetry_gap_assessment.py` run against the declared log source
+      inventory; scoring is conservative (undeclared fields count as absent).
+
+      ## Coverage by event family
+
+      | Event family | Status | Score | Attack classes blocked while missing |
+      |---|---|---|---|
+      | Prompt events | {{ s.prompt }} | {{ n.prompt }} | Direct & indirect injection, jailbreaks |
+      | Completion events | {{ s.completion }} | {{ n.completion }} | Output leakage, exfiltration |
+      | Token accounting | {{ s.tokens }} | {{ n.tokens }} | Model extraction, API abuse |
+      | Tool call events | {{ s.tools }} | {{ n.tools }} | Agent/tool abuse |
+      | Pipeline provenance | {{ s.pipeline }} | {{ n.pipeline }} | Training data poisoning |
+
+      ## Reading the statuses
+
+      - **ABSENT** -- the platform has a 100% false-negative rate for the blocked
+        attack classes. No rule investment changes this; only telemetry onboarding does.
+      - **PARTIAL** -- some detections are possible; the missing fields listed in the
+        gap report name exactly which detections remain blocked.
+      - **COMPLETE** -- the event family supports every Chapter 5 detection that
+        consumes it; remaining risk is detection quality, tracked on the coverage map.
+
+      ## Recommended next onboarding step
+
+      {{ weakest_family }} — closes: {{ attack_classes_unblocked }}.
+      Emission point: {{ emission_point }}. Privacy handling class:
+      {{ privacy_class }} (controls per `ocsf_genai_event_schema.yaml`).
+
+      ## What this scorecard is not
+
+      Not a product evaluation. The gap is closed by capturing and normalising
+      event families into the existing platform, after which coverage is tracked
+      per attack class on the Chapter 5 coverage map alongside ATT&CK coverage.
+
+common_mistakes:
+  mistake_1:
+    description: >-
+      Starting AI security detection at the rule layer: writing Sigma rules or buying
+      pattern content for LLM attacks before verifying that any LLM telemetry exists in
+      the pipeline.
+    why_it_happens: >-
+      Rule authoring is the trained reflex of every detection engineer, and Chapter 4 just
+      sharpened it. Vendors reinforce the reflex by selling rule packs that imply the
+      events already exist.
+    consequence: >-
+      Rules deploy, test green against synthetic samples, and never fire in production --
+      not because attacks are absent but because the triggering events are never generated.
+      The coverage map shows the rules as coverage, converting a visible gap into an
+      invisible one, which is strictly worse.
+    correct_approach: >-
+      Run the telemetry gap assessment first. Treat any attack class whose event family
+      scores ABSENT as uncovered regardless of rule inventory, and sequence work as
+      telemetry onboarding, then normalisation, then rules -- the same order the chapter
+      itself follows.
+  mistake_2:
+    description: >-
+      Treating LLM attacks as a signature problem: assuming the syntactic instincts that
+      work for SQL injection, XSS, and command injection transfer to prompt injection.
+    why_it_happens: >-
+      The word "injection" invites the analogy, and early public injection examples used
+      recognisable stock phrases that regex catches easily, which made signature approaches
+      look temporarily effective.
+    consequence: >-
+      A signature library that catches yesterday's phrasings and misses trivial
+      paraphrases, translations, and encodings of the same attack -- a false sense of
+      coverage with a decay curve measured in weeks, and no mechanism that notices the decay.
+    correct_approach: >-
+      Internalise the data/instruction boundary collapse: hostility here is semantic, so
+      syntactic methods are prefilters, not coverage. Use pattern matching where it wins --
+      cheap, explainable triage -- under measured classifier tiers (5.4), and measure
+      library decay as a first-class metric (5.5).
+  mistake_3:
+    description: >-
+      Logging prompts and completions like application debug logs: full content, default
+      retention, standard access, privacy handled later.
+    why_it_happens: >-
+      Detection teams are trained that more telemetry is better and rarely handle content
+      this sensitive; the fastest path to unblocking detection work is to log everything
+      and move on.
+    consequence: >-
+      The detection platform becomes one of the highest-value data stores in the company --
+      concentrated PII, credentials, and privileged business content with broad analyst
+      access -- creating a breach target and a regulatory exposure the security team itself
+      manufactured.
+    correct_approach: >-
+      Build privacy controls into the event schema before capture begins: separate metadata
+      from restricted content, redact inline, tier retention, partition raw access behind
+      break-glass, and document the lawful basis. The schema deliverable exists so these
+      are structural properties, not per-analyst discipline.
+  mistake_4:
+    description: >-
+      Routing AI security telemetry into a standalone tool with its own console instead of
+      normalising it into the platform.
+    why_it_happens: >-
+      AI security products ship with turnkey dashboards, and standing up gateway telemetry
+      plus OCSF mappings looks slower than a procurement. The surface feels exotic enough
+      to justify a special-purpose system.
+    consequence: >-
+      A parallel, unmeasured detection program: no cross-domain correlation (injection
+      attempt followed by anomalous tool calls under the same identity is inexpressible),
+      no shared lifecycle, and Section 4.1's lock-in problem recreated on the newest
+      surface in the stack.
+    correct_approach: >-
+      Apply the Chapter 4 rule without exception: new surface, same platform. Gateway
+      events map through the OCSF layer into the same ingest-normalise-correlate-alert
+      path as every other domain; products, where used, are telemetry sources feeding
+      that path, not destinations.
+  mistake_5:
+    description: >-
+      Reading a green coverage dashboard as evidence the LLM surface is covered because
+      the surface never appears on it.
+    why_it_happens: >-
+      Coverage maps report on the techniques and telemetry they were built around; a
+      surface nobody added produces no red cells. Absence of visible gaps reads as absence
+      of gaps, especially to stakeholders consuming the dashboard secondhand.
+    consequence: >-
+      Organisational false confidence with no owner: the platform reports healthy, leaders
+      believe LLM risk is handled because "we have detection", and the gap persists
+      precisely because nothing anywhere says it exists.
+    correct_approach: >-
+      Make the gap itself a reported artifact: run the assessment, publish the scorecard
+      with explicit ABSENT statuses, and extend the coverage map to include LLM attack
+      classes with honest uncovered states (5.2) so the dashboard can be red where reality
+      is red.
+
+section_summary:
+  compact: >-
+    LLM attacks are invisible to mature detection programs because the attack payload is
+    natural language inside an allowed operation, and the prompt channel that carries it
+    generates no events in traditional pipelines: the gap is structural and lives at the
+    telemetry layer. Five mismatches define it -- semantic payloads, attacks inside
+    allowed operations, the intent boundary inside the request body, attacker-is-not-user,
+    and compromise upstream of runtime -- with the data/instruction boundary collapse as
+    the mechanism behind the hardest cases. Closing the gap starts with the mandatory
+    telemetry inventory (prompt, completion, token accounting, tool call, and pipeline
+    provenance events), captured at an LLM gateway with privacy controls designed into the
+    event schema, normalised through the Chapter 4 OCSF layer into the same platform as
+    every other domain, and measured with a gap assessment whose scorecard makes the
+    blindness visible to stakeholders. The rest of the chapter is the response.
+  key_takeaways:
+  - The AI security detection gap is a telemetry-layer problem, not a rule-layer problem;
+    no rule investment closes it until the prompt channel is captured and normalised
+  - Five structural mismatches invalidate traditional detection instincts on this surface,
+    and each one reappears as a design constraint in a later section of the chapter
+  - The data/instruction boundary collapse means hostility is semantic, so detection here
+    has an irreducible error rate and the engineering goal is measured error, not certainty
+  - Coverage must be assessed per attack class against the specific telemetry that class
+    requires, because observation points and attack classes do not align one-to-one
+  - 'Prompt and completion telemetry is restricted content, not metadata: privacy controls
+    belong in the event schema structure, designed in before the first event is captured'
+  - AI security events flow through the same OCSF normalisation and platform path as every
+    other domain -- a standalone AI security console recreates SIEM lock-in on a new surface
+
+preview_section_05_02:
+  title: 'OWASP LLM Top 10 as a Detection Framework'
+  summary: >-
+    Section 5.1 made the gap visible and specified the telemetry that closes it; Section
+    5.2 makes coverage measurable. The OWASP LLM Top 10 is reframed from an awareness
+    document into a coverage map: each risk becomes a detection hypothesis with named
+    telemetry requirements, a detection method family, and a tracked status on the
+    platform -- the same role ATT&CK plays in Chapter 1 -- with the framework version
+    pinned and re-verified so the map survives the list's own evolution.
+
+metadata:
+  tags:
+  - ai-security
+  - llm-security
+  - detection-gap
+  - telemetry-first
+  - prompt-injection
+  - indirect-injection
+  - data-instruction-boundary
+  - llm-gateway
+  - ocsf
+  - genai-telemetry
+  - privacy-engineering
+  - attack-surface-mapping
+  - coverage-measurement
+  - detection-engineering
+  cross_chapter_references:
+  - 'Chapter 1, Section 1.4: ATT&CK-as-architecture -- the coverage mapping discipline this
+    section extends to the LLM surface'
+  - 'Chapter 2, Section 2.1: the four-layer platform model that the new event families must
+    flow through end to end'
+  - 'Chapter 3, Section 3.3: rule schema and detection-as-code lifecycle governing the
+    attack surface map and event schema artifacts'
+  - 'Chapter 4, Sections 4.2-4.4: the OCSF normalisation layer that the GenAI gateway event
+    schema targets'
+  - 'Companion repo ruwgxo/ai-security-mastery: ML fundamentals beneath the detection
+    treatment, for readers who want model-level depth'
+  forward_references:
+  - 'Section 5.2: the OWASP LLM Top 10 coverage map built on this section''s attack surface
+    map and telemetry inventory'
+  - 'Section 5.4: the hybrid injection pipeline that consumes prompt events with context
+    source tags'
+  - 'Section 5.9: the gateway architecture that emits the mandatory telemetry at production
+    scale with latency and failure budgets'
+  - 'Chapter 6: the same telemetry-first discipline applied to cloud, API, and serverless
+    surfaces'
