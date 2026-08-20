@@ -1,0 +1,1041 @@
+# section_05_10_chapter_summary.yaml
+
+---
+document_info:
+  title: 'Chapter 5 Summary: AI Security Detection'
+  subtitle: 'Synthesis, coverage record, deliberate deferrals, and the bridge to Chapter 6'
+  chapter: 5
+  section: 10
+  author: 'Raghav Dinesh'
+  github: 'https://github.com/ruwgxo/detection-engineering-at-scale'
+  license: 'MIT'
+  version: '1.0'
+  estimated_pages: 3
+  estimated_reading_time: '25-30 minutes'
+  created: '2026-07-19'
+
+section_overview:
+  one_line_summary: |-
+    Chapter 5 turned an unmonitored attack surface into a measured one, and the
+    chapter closes on its artifact of record rather than a recap: ten of ten
+    coverage rows accounted for -- eight active with named detectors, one
+    partial by design, one honest accepted gap -- built by applying the
+    lifecycle, code discipline, and open standards the book already had to a
+    telemetry family nobody was collecting.
+  why_this_section_exists: |-
+    A chapter summary that lists what each section said is of no use to a reader
+    who just read them. This one exists to do three things a section-by-section
+    recap cannot.
+
+    It states the chapter's result as a single artifact. Nine sections produced
+    thirty-six deliverables, and the question a security leader actually asks is
+    not which techniques were covered but what the program can now see and what
+    it still cannot. The coverage record answers that in one page, with every
+    claim traceable to a named detector or a written rationale.
+
+    It names the deferrals explicitly. Agentic detection, scale engineering, and
+    response actions were all pushed out of scope during the chapter, each for a
+    stated reason. Collected in one place, they become a roadmap rather than
+    scattered caveats a reader has to remember.
+
+    And it makes the chapter's actual argument visible now that the evidence
+    exists. AI security detection is not a new discipline requiring new
+    tooling, new consoles, and new vendors -- it is detection engineering
+    applied to new telemetry. Every mechanism the chapter used came from
+    Chapters 1 through 4. That claim would have been an assertion in Section
+    5.1; after nine sections of applying it, it is a conclusion.
+  position_in_chapter: |-
+    Final section of Chapter 5 and the last of Part II's second chapter. It
+    consolidates 5.1 through 5.9, publishes the coverage record, collects the
+    deferrals, assesses against the chapter completion criteria, and hands off
+    to Chapter 6, where the same method meets cloud, API, and serverless
+    surfaces. Nothing new is built here except the consolidation artifacts
+    themselves.
+
+learning_objectives:
+  knowledge:
+  - 'State the chapter result as a coverage position rather than a list of
+    techniques'
+  - 'Explain why the two non-active rows are recorded as partial and accepted
+    gap rather than closed'
+  - 'Name the chapter deliberate deferrals and the chapter that owns each'
+  - 'Explain the claim that AI security detection is detection engineering with
+    new telemetry, and cite the evidence from the chapter'
+  - 'Describe the maintenance obligations without which the coverage record
+    decays'
+  skills:
+  - 'Locate any chapter artifact by section from the consolidated deliverable
+    index'
+  - 'Regenerate and read the coverage record'
+  - 'Self-assess against the chapter completion criteria and identify which
+    section to reread'
+  security_mindset:
+  - 'Report coverage as accounted-for rather than covered, and defend the
+    difference'
+  - 'Treat a coverage record with no maintenance jobs behind it as a snapshot
+    that will be confidently wrong'
+  - 'Carry the method rather than the specifics into the next surface'
+
+prerequisites:
+- 'Sections 5.1 through 5.9: this section consolidates them and assumes they
+  have been read'
+- 'Section 5.2 and 5.9: the coverage matrix and the closure report that
+  generates the record published here'
+- 'Chapter 1-4: the lifecycle, platform, detection-as-code, and open-standards
+  foundations the chapter argues were sufficient all along'
+
+prose_content:
+- part: 1
+  title: 'What the Chapter Established'
+  body: |-
+    Chapter 5 opened with a detection program that had endpoint, network, cloud,
+    and identity telemetry, healthy ATT&CK coverage, and a one hundred percent
+    false-negative rate against LLM attacks. The diagnosis was that the gap was
+    structural and lived at the telemetry layer: a prompt injection is an
+    authenticated request to an approved endpoint carrying a well-formed body,
+    and no rule over the existing sources can distinguish it from ordinary use
+    because the events that would carry the signal are never generated.
+
+    That diagnosis set the chapter's order of work, and it is the order worth
+    carrying forward. Telemetry first -- five mandatory event families, captured
+    at a gateway, with privacy controls designed into the schema before the
+    first event was written. Frameworks second, converted from awareness
+    documents into coverage maps with detectability classes and tracked status.
+    Detectors third, layered and measured. Placement fourth, budgeted and
+    enforced. A program that reverses any two of those steps builds rules that
+    test green and never fire.
+- part: 2
+  title: 'The Framework Layer'
+  body: |-
+    Sections 5.2 and 5.3 converted two frameworks into one coverage map. The
+    OWASP LLM Top 10 supplied the risk enumeration, restated as detection
+    hypotheses with named telemetry and detectability classes -- rule, hybrid,
+    behavioral, statistical, architectural, and not-detection-shaped. MITRE
+    ATLAS supplied the adversary-behaviour view, converted by the same machinery
+    plus one discipline the risk list did not require: the observability audit,
+    because large phases of the adversarial ML lifecycle run on infrastructure
+    the defender does not operate and emit nothing at all.
+
+    Both conversions shared a version discipline that matters more than either
+    framework. Detections bind to stable attack classes; citations pin the
+    framework edition. That two-sided pin is what makes a framework revision a
+    mechanical remap rather than an archaeology project, and it is enforced in
+    code -- the ATLAS backlog generator refuses to ship a backlog containing a
+    technique ID cited from memory.
+- part: 3
+  title: 'The Five Detection Families'
+  body: |-
+    Sections 5.4 through 5.8 built five families, and each one taught a
+    different lesson about method selection.
+
+    Injection detection is layered: a cheap explainable pattern tier under a
+    classifier tier that generalises to paraphrase, combined so the stack fires
+    on the union -- proven in code at 0.875 recall against 0.625 for either
+    layer alone. Jailbreak detection added what an active adversarial community
+    demands: contrastive semantic scoring calibrated against a benign
+    background, conversation state for escalation that no single-message
+    detector can see, and instrumented decay with per-family recall floors.
+    Poisoning detection left the traffic path entirely for the build pipeline,
+    where integrity verification is deterministic and free of false positives,
+    and statistical ingestion checks calibrate their thresholds from the
+    corpus's own spread. Extraction detection abandoned thresholds altogether,
+    because no global rate cap separates a campaign from a larger sanctioned
+    integrator -- only per-identity baselines plus query-pattern signals do.
+    Output monitoring treated completions as egress, with findings that carry
+    offsets and hashes rather than values, and detection kept strictly separate
+    from redaction.
+- part: 4
+  title: 'The Gateway Architecture'
+  body: |-
+    Section 5.9 assembled the five families into one deployable architecture
+    with four integration points that differ in capability rather than merely in
+    cost: pre-request can prevent an injection, the tool-call gate can stop an
+    irreversible action, post-response can redact and stop rendering-triggered
+    harm, and off-path can only detect.
+
+    Two constraints did the architectural work. A 120ms inline budget, enforced
+    at boot, currently consuming 94ms across seven detectors -- so adding
+    anything inline forces an explicit demotion rather than a silent latency
+    regression. And a fail policy decided per detector in advance on
+    recoverability rather than severity: most fail open because another tier
+    still sees the request, while beacon exfiltration and the tool-call gate
+    fail closed because their harm completes on delivery or execution.
+    Everything normalises through the Chapter 4 OCSF layer into the Chapter 2
+    platform, because a standalone AI security console would recreate the
+    Section 4.1 lock-in problem on the newest surface in the stack.
+- part: 5
+  title: 'The Coverage Record as the Artifact of Record'
+  body: |-
+    The chapter's output is not thirty-six files. It is a coverage position:
+    ten of ten rows accounted for, eight active with named implementing
+    detectors, one partial by design, one accepted gap, none open -- computed by
+    joining the Section 5.2 matrix against the Section 5.9 placement matrix on
+    per-detector risk coverage, and failing CI if any row lacks both a detector
+    and a rationale.
+
+    Two rows carry the record's credibility. LLM08 stays partial because the
+    weakness is architectural while only its exploitation path emits telemetry.
+    LLM09 stays an accepted gap because factuality is not a property any
+    telemetry family carries, and the available alternative -- keyword rules on
+    hedging language -- would produce noise while covering nothing. Both were
+    recorded as such in Section 5.2 before any detector existed, and neither was
+    quietly upgraded once the chapter had results to show. The correct phrasing
+    is ten of ten accounted for, not ten of ten covered, and defending that
+    distinction to a stakeholder who wants green is part of the job.
+- part: 6
+  title: 'Cross-Cutting Threads'
+  body: |-
+    Four disciplines recurred in every section, and they are what a reader
+    should carry to the next surface rather than the specific detectors.
+
+    Measurement before shipping: every detector in the chapter was evaluated
+    against a labelled corpus or an executable assertion, and several sections
+    caught their own authors being wrong -- the extraction detector's ablation
+    corrected a claim about which signals carried the detection, and the closure
+    report caught itself manufacturing coverage through a section-level join.
+    Honest limits stated in the artifact: the integrity checker prints that it
+    proves provenance rather than intent, and the ingestion monitor prints that
+    it detects campaigns rather than craftsmanship. Privacy designed into
+    schemas: prompt and completion telemetry under restricted-content handling,
+    consumption telemetry deliberately metadata-only so its retention could be
+    long enough to catch slow campaigns, and output findings carrying hashes
+    rather than values. And lifecycle as a first-class deliverable: recall
+    floors, decay gates, and closure gates, because a detection artifact without
+    a maintenance job is a snapshot that will be confidently wrong within two
+    quarters.
+- part: 7
+  title: 'What Remains Open'
+  body: |-
+    Three exclusions were made deliberately and are collected here as a roadmap
+    rather than left as scattered caveats.
+
+    Agentic detection is the largest. Chapter 5 covered agency only where the
+    pinned framework does -- excessive agency via the tool-call gate. Multi-agent
+    orchestration, inter-agent trust, and tool-ecosystem attacks form their own
+    enumeration, which OWASP maintains as a separate agentic top-ten, and they
+    warrant the same conversion exercise Sections 5.2 and 5.3 performed. The
+    machinery transfers unchanged, which was the point of building it
+    framework-agnostically.
+
+    Scale engineering is deferred to Part III. The architecture states latency
+    budgets and enforces them at boot; sizing infrastructure to meet them under
+    production volume -- throughput, caching, horizontal scaling, cost
+    engineering -- is Chapter 9. And response actions belong to Chapter 12:
+    every detector in this chapter emits findings and none acts on them, which
+    is why the Section 5.7 abuse alert stopped at a handoff contract and why the
+    Section 5.8 pipeline returns a redaction map rather than a redacted string.
+- part: 8
+  title: 'The Argument, Now Demonstrated'
+  body: |-
+    The chapter's claim was that AI security detection is detection engineering
+    with new telemetry, not a new discipline. In Section 5.1 that was an
+    assertion. After nine sections it is a conclusion supported by where every
+    mechanism came from.
+
+    The coverage map discipline came from Chapter 1's treatment of ATT&CK. The
+    platform, the correlation engine, and the stateful-versus-stateless
+    distinction that made multi-turn escalation detection possible came from
+    Chapter 2. The rule schema, unit tests, CI gates, and versioning that hold
+    the pattern libraries and coverage matrix together came from Chapter 3.
+    Sigma and OCSF -- the reason these detections are portable and the reason a
+    standalone AI console was never on the table -- came from Chapter 4. What
+    Chapter 5 supplied was a telemetry family nobody was collecting and a set of
+    detectors tuned to a surface where the data-instruction boundary has
+    collapsed.
+
+    That is worth stating plainly because the market says otherwise. The
+    prevailing message is that AI security requires a new category of product,
+    and the honest engineering answer is that it requires new telemetry, a
+    coverage map, and the discipline the program should already have. A team
+    that can run a detection lifecycle can secure an LLM application. A team
+    that cannot will not be rescued by a product.
+- part: 9
+  title: 'Bridge to Chapter 6'
+  body: |-
+    Chapter 6 applies the same method to cloud, API, and serverless surfaces,
+    and the transferable steps are the ones this chapter drilled: establish the
+    telemetry gap before writing rules, convert a framework into a coverage map,
+    layer detectors by what each method wins at, baseline per entity where
+    thresholds fail, instrument decay, place by budget and recoverability, and
+    close coverage from shipped artifacts.
+
+    Three things change, and expecting them not to is how a reader over-applies
+    this chapter. The payload becomes structured again -- an API call is typed,
+    parameterised, and attributable, so deterministic detection recovers ground
+    it lost to semantic judgement here, and classifiers become an exception
+    rather than a required tier. The observation point returns to infrastructure
+    the defender already operates, so the problem shifts from creating telemetry
+    to managing the volume and cost of telemetry that already exists, plus
+    ephemeral workloads that vanish before anything queries them. And latency
+    stops being the binding constraint: cloud detection is predominantly
+    event-driven, so the placement calculus moves from milliseconds to ingest
+    cost and detection lag. The four placement questions still apply; only the
+    units of the second one change.
+
+reference_materials:
+- table: 1
+  title: 'Chapter 5 at a Glance'
+  description: |-
+    Each section, what it established, and the artifact a reader returns to.
+  columns:
+  - 'Section'
+  - 'Established'
+  - 'Primary artifact'
+  rows:
+  - - '5.1 Detection gap'
+    - 'The gap is telemetry-layer, not rule-layer; five mandatory event families'
+    - 'ocsf_genai_event_schema.yaml'
+  - - '5.2 OWASP conversion'
+    - 'Risk list becomes a coverage map with detectability classes'
+    - 'owasp_llm_top10_coverage_matrix.yaml'
+  - - '5.3 ATLAS conversion'
+    - 'Adversary view plus the observability audit; citation discipline in code'
+    - 'atlas_detection_hypotheses.yaml'
+  - - '5.4 Injection'
+    - 'Layered pattern and classifier tiers firing on the union'
+    - 'hybrid_decision_layer.py'
+  - - '5.5 Jailbreak'
+    - 'Contrastive semantic scoring, conversation state, instrumented decay'
+    - 'jailbreak_eval_harness.py'
+  - - '5.6 Poisoning'
+    - 'Build-pipeline detection; integrity proves provenance, not intent'
+    - 'artifact_integrity_checker.py'
+  - - '5.7 Extraction'
+    - 'Per-identity baselines beat global thresholds; metadata-only telemetry'
+    - 'extraction_detector.py'
+  - - '5.8 Output monitoring'
+    - 'Completions as egress; detection separate from redaction'
+    - 'output_monitoring_pipeline.py'
+  - - '5.9 Architecture'
+    - 'Placement by budget and recoverability; coverage closed from artifacts'
+    - 'placement_decision_matrix.yaml'
+- table: 2
+  title: 'The Five Detection Families and Their Placement'
+  description: |-
+    Each family, the method it settled on, and where it runs in the assembled
+    architecture.
+  columns:
+  - 'Family'
+  - 'Method'
+  - 'Placement'
+  - 'Why there'
+  rows:
+  - - 'Injection'
+    - 'Pattern tier under classifier tier, union verdict'
+    - 'Inline, 48ms'
+    - 'Only pre-request placement prevents the model acting on the payload'
+  - - 'Jailbreak'
+    - 'Structural signals, contrastive semantic margin, conversation state'
+    - 'Inline 6ms, near-real-time, async'
+    - 'Detection shortly after response still drives suspension and review'
+  - - 'Poisoning and supply chain'
+    - 'Deterministic integrity plus calibrated ingestion statistics'
+    - 'Build-time'
+    - 'The only affordable window; after training there is no signal left'
+  - - 'Extraction and abuse'
+    - 'Per-identity baselines plus diversity, coverage, sweep signals'
+    - 'Async'
+    - 'The signal does not exist within a single request'
+  - - 'Output monitoring'
+    - 'Per-data-class PII methods, exfiltration checks, canary scan'
+    - 'Inline 34ms, near-real-time, async correlation'
+    - 'Last moment a redaction map is useful; staged exfiltration needs
+      correlation'
+- table: 3
+  title: 'Coverage Record Summary'
+  description: |-
+    The chapter result as published in chapter5_coverage_record.md, generated by
+    the closure report rather than transcribed.
+  columns:
+  - 'Status'
+  - 'Rows'
+  - 'Meaning'
+  rows:
+  - - 'ACTIVE'
+    - '8'
+    - 'At least one named detector implements the row, shipped and placed'
+  - - 'PARTIAL'
+    - '1 (LLM08)'
+    - 'Exploitation path detected; the weakness itself is an architecture
+      control'
+  - - 'ACCEPTED_GAP'
+    - '1 (LLM09)'
+    - 'No security-event observable exists; owned by evaluation and grounding'
+  - - 'OPEN'
+    - '0'
+    - 'No row lacks both a detector and a written rationale -- the closure gate
+      fails the build otherwise'
+- table: 4
+  title: 'Deliberate Deferrals'
+  description: |-
+    What Chapter 5 excluded on purpose, why, and which chapter owns it.
+  columns:
+  - 'Deferred'
+  - 'Reason'
+  - 'Owner'
+  rows:
+  - - 'Agentic and multi-agent detection'
+    - 'A separate framework enumeration; the conversion machinery transfers
+      unchanged'
+    - 'Future work; OWASP agentic top-ten'
+  - - 'Throughput, scaling, cost engineering'
+    - 'The architecture states budgets; sizing to meet them is a different
+      discipline'
+    - 'Chapter 9 (Part III)'
+  - - 'Response actions'
+    - 'Coupling detection to a response system that does not exist yet makes
+      both harder to change'
+    - 'Chapter 12'
+  - - 'Classifier construction and ML depth'
+    - 'The chapter consumes a contract; building the model is its own subject'
+    - 'Chapter 7; companion repo ai-security-mastery'
+  - - 'Variance-aware threshold setting'
+    - 'Chapter 5 calibrates from observed spread; the formal treatment is
+      elsewhere'
+    - 'Chapter 10'
+
+deliverables:
+- id: 1
+  name: 'chapter5_deliverable_index.yaml'
+  description: |-
+    The consolidated index of all thirty-six chapter artifacts by section, with
+    file references, artifact kinds, and totals -- the manifest a reader uses to
+    locate anything and a CI job walks to confirm the chapter is intact.
+  implementation_notes: |-
+    Generated FROM the section files rather than transcribed, and validated by
+    asserting the listed set matches deliverable filenames extracted from the
+    nine section YAMLs exactly. That check is the deliverable verification rule
+    written into the artifact: an added, renamed, or dropped deliverable fails
+    the build rather than silently desynchronising the index. Counts by kind
+    (12 executable, 13 specification, 4 rule packs, 6 reference, 1 corpus) are
+    computed, not asserted.
+  code: |
+    # chapter5_deliverable_index.yaml
+    # Section 0510 -- Chapter 5 Summary: AI Security Detection
+    # 20260719 | Detection Engineering: AI Security Detection (Section 0510 Chapter Summary) by Raghav Dinesh
+    #
+    # Every artifact Chapter 5 ships, by section. This is the index a reader
+    # clones the repo to use, and the manifest a CI job walks to confirm the
+    # chapter is intact. 36 deliverables across 9 content sections.
+    index_version: '1.0'
+    chapter: 5
+    repo_path: 'book/ch05/'
+    totals:
+      sections: 9
+      deliverables: 36
+      executable: 12
+      specification: 13
+      rule_pack: 4
+      reference: 6
+      corpus: 1
+    sections:
+      '5.1':
+        title: 'The AI Security Detection Gap'
+        deliverables:
+          - file: 'llm_telemetry_gap_assessment.py'
+            kind: 'executable'
+            title: 'LLM Telemetry Gap Assessment'
+          - file: 'llm_attack_surface_map.yaml'
+            kind: 'specification'
+            title: 'LLM Attack Surface Map'
+          - file: 'ocsf_genai_event_schema.yaml'
+            kind: 'specification'
+            title: 'OCSF-Aligned GenAI Gateway Event Schema'
+          - file: 'detection_gap_scorecard.md'
+            kind: 'reference'
+            title: 'Detection Gap Scorecard'
+      '5.2':
+        title: 'OWASP LLM Top 10 as a Detection Framework'
+        deliverables:
+          - file: 'owasp_llm_top10_coverage_matrix.yaml'
+            kind: 'specification'
+            title: 'OWASP LLM Top 10 Coverage Matrix'
+          - file: 'coverage_gap_report.py'
+            kind: 'executable'
+            title: 'Coverage Gap Report'
+          - file: 'risk_detectability_reference.md'
+            kind: 'reference'
+            title: 'Risk Detectability Reference'
+          - file: 'sigma_tag_convention.md'
+            kind: 'reference'
+            title: 'Sigma Tag Convention for LLM Top 10 Binding'
+      '5.3':
+        title: 'ATLAS ATT&CK for ML'
+        deliverables:
+          - file: 'atlas_detection_hypotheses.yaml'
+            kind: 'specification'
+            title: 'ATLAS Detection Hypotheses'
+          - file: 'atlas_owasp_crosswalk.yaml'
+            kind: 'specification'
+            title: 'ATLAS-OWASP Crosswalk'
+          - file: 'hypothesis_backlog_generator.py'
+            kind: 'executable'
+            title: 'Hypothesis Backlog Generator'
+          - file: 'atlas_test_scenarios.md'
+            kind: 'reference'
+            title: 'ATLAS Case-Study Test Scenarios'
+      '5.4':
+        title: 'Detecting Prompt Injection'
+        deliverables:
+          - file: 'sigma_prompt_injection_rules.yml'
+            kind: 'rule_pack'
+            title: 'Pattern-Layer Sigma Rule Pack'
+          - file: 'injection_classifier_contract.yaml'
+            kind: 'specification'
+            title: 'Injection Classifier Contract'
+          - file: 'hybrid_decision_layer.py'
+            kind: 'executable'
+            title: 'Hybrid Decision Layer'
+          - file: 'injection_test_corpus.jsonl'
+            kind: 'corpus'
+            title: 'Labelled Injection Test Corpus'
+      '5.5':
+        title: 'Jailbreak Detection'
+        deliverables:
+          - file: 'jailbreak_pattern_library.yaml'
+            kind: 'specification'
+            title: 'Jailbreak Pattern Library'
+          - file: 'semantic_distance_scorer.py'
+            kind: 'executable'
+            title: 'Semantic Distance Scorer'
+          - file: 'multiturn_correlation_rule.yaml'
+            kind: 'specification'
+            title: 'Multi-Turn Correlation Rule'
+          - file: 'jailbreak_eval_harness.py'
+            kind: 'executable'
+            title: 'Jailbreak Evaluation Harness'
+      '5.6':
+        title: 'Training Data Poisoning Indicators'
+        deliverables:
+          - file: 'pipeline_provenance_schema.yaml'
+            kind: 'specification'
+            title: 'Pipeline Provenance Event Schema'
+          - file: 'sigma_poisoning_indicators.yml'
+            kind: 'rule_pack'
+            title: 'Poisoning Indicator Sigma Pack'
+          - file: 'artifact_integrity_checker.py'
+            kind: 'executable'
+            title: 'Artifact Integrity Checker'
+          - file: 'rag_ingestion_monitor.py'
+            kind: 'executable'
+            title: 'RAG Ingestion Monitor'
+      '5.7':
+        title: 'Model Extraction and API Abuse'
+        deliverables:
+          - file: 'sigma_api_abuse_rules.yml'
+            kind: 'rule_pack'
+            title: 'API Abuse Sigma Rule Pack'
+          - file: 'extraction_detector.py'
+            kind: 'executable'
+            title: 'Extraction Detector'
+          - file: 'token_accounting_schema.yaml'
+            kind: 'specification'
+            title: 'Token Accounting Schema'
+          - file: 'abuse_alert_playbook_stub.md'
+            kind: 'reference'
+            title: 'Abuse Alert Handoff Contract (stub)'
+      '5.8':
+        title: 'LLM Output Monitoring'
+        deliverables:
+          - file: 'output_monitoring_pipeline.py'
+            kind: 'executable'
+            title: 'Output Monitoring Pipeline'
+          - file: 'sigma_output_rules.yml'
+            kind: 'rule_pack'
+            title: 'Output Rule Pack'
+          - file: 'system_prompt_canary_kit.py'
+            kind: 'executable'
+            title: 'System Prompt Canary Kit'
+          - file: 'pii_check_contract.yaml'
+            kind: 'specification'
+            title: 'PII Check Contract'
+      '5.9':
+        title: 'Production Gateway Architecture'
+        deliverables:
+          - file: 'gateway_detection_architecture.md'
+            kind: 'reference'
+            title: 'Gateway Detection Reference Architecture'
+          - file: 'placement_decision_matrix.yaml'
+            kind: 'specification'
+            title: 'Placement Decision Matrix'
+          - file: 'gateway_reference_config.yaml'
+            kind: 'specification'
+            title: 'Gateway Reference Configuration'
+          - file: 'chapter5_coverage_closure_report.py'
+            kind: 'executable'
+            title: 'Chapter 5 Coverage Closure Report'
+    verification:
+      rule: >
+        Every file listed here is a deliverable embedded in its section YAML. A CI
+        job extracts deliverable filenames from the section files and asserts the
+        set matches this index exactly -- so an added, renamed, or dropped
+        deliverable fails the build rather than silently desynchronising the index.
+- id: 2
+  name: 'chapter5_coverage_record.md'
+  description: |-
+    The chapter artifact of record: per-risk status with implementing
+    detectors, the two non-active rows explained in full, what sits outside the
+    map entirely, and the maintenance obligations without which the record
+    decays.
+  implementation_notes: |-
+    Published from the closure report output rather than written by hand, so
+    the record and the gate cannot disagree. The phrasing is deliberately ten of
+    ten ACCOUNTED FOR rather than covered, and the two non-active rows get more
+    space than the eight active ones -- because a coverage record earns trust
+    through what it declines to claim. The maintenance table exists because a
+    record with no jobs behind it is a snapshot that will be confidently wrong
+    within two quarters and still being read.
+  code: |
+    <!--
+    chapter5_coverage_record.md
+    Section 0510 -- Chapter 5 Summary: AI Security Detection
+    20260719 | Detection Engineering: AI Security Detection (Section 0510 Chapter Summary) by Raghav Dinesh
+    -->
+    # Chapter 5 Coverage Record
+
+    The chapter's artifact of record. Not a summary of what was built -- the
+    statement of what the program can and cannot see, with every claim traceable
+    to a named detector or a written rationale.
+
+    **Framework pin:** OWASP Top 10 for LLM Applications, 2025 edition (v2.0).
+    **Generated by:** `chapter5_coverage_closure_report.py` joining
+    `owasp_llm_top10_coverage_matrix.yaml` to `placement_decision_matrix.yaml` on
+    per-detector risk coverage.
+
+    ## Status
+
+    | Risk | Status | Implementing detectors |
+    |---|---|---|
+    | LLM01 Prompt Injection | ACTIVE | injection pattern tier, injection classifier tier, jailbreak pattern library, semantic scorer, multi-turn correlation |
+    | LLM02 Sensitive Information Disclosure | ACTIVE | output PII pattern, beacon exfiltration, encoded blob, staged exfiltration correlation |
+    | LLM03 Supply Chain | ACTIVE | pipeline integrity checks, RAG ingestion monitor |
+    | LLM04 Data and Model Poisoning | ACTIVE | pipeline integrity checks, RAG ingestion monitor |
+    | LLM05 Improper Output Handling | ACTIVE | agent tool-call action log, beacon exfiltration |
+    | LLM06 Excessive Agency | ACTIVE | agent tool-call action log |
+    | LLM07 System Prompt Leakage | ACTIVE | output canary scan |
+    | LLM08 Vector and Embedding Weaknesses | PARTIAL | injection pattern and classifier tiers (exploitation path only) |
+    | LLM09 Misinformation | ACCEPTED_GAP | none |
+    | LLM10 Unbounded Consumption | ACTIVE | extraction scoring, API abuse rules |
+
+    **Accounted for: 10/10. Active: 8. Partial: 1. Accepted gap: 1. Open: 0.**
+
+    Ten of ten *accounted for* -- not ten of ten covered. The distinction is the
+    record's whole purpose.
+
+    ## The two non-active rows, in full
+
+    **LLM08 is partial by design.** The weakness lives in how the retrieval layer
+    is constructed -- embedding space properties, index access control, tenant
+    isolation -- and a design property emits no events. What does emit events is
+    its exploitation path: hostile content arriving through retrieved documents,
+    which the Section 5.4 context-source scoring covers. The remainder belongs to
+    architecture review, not detection. Recorded as partial in Section 5.2 before
+    any detector existed, and left partial here.
+
+    **LLM09 is an accepted gap.** Whether a model assertion is false is not a
+    property any telemetry family carries. Detection has no observable; the
+    control is evaluation and grounding, owned by model quality. The available
+    alternative -- keyword rules on hedging language -- would produce noise while
+    covering nothing, and would convert an honest gap into a false green row.
+    Owning control: evaluation pipeline and grounding architecture. Review on the
+    framework recheck cadence.
+
+    ## What is not on this map at all
+
+    The matrix covers the LLM application surface as the pinned edition defines it.
+    Three things sit outside it deliberately:
+
+    - **Agentic and multi-agent attack surface.** OWASP maintains a separate
+      top-ten for agentic applications. Chapter 5 covers agency only where it
+      touches this list -- LLM06 via the tool-call gate. Inter-agent trust,
+      orchestration compromise, and tool-ecosystem attacks are their own
+      enumeration and their own conversion exercise.
+    - **Scale and cost engineering.** The architecture states latency budgets and
+      enforces them at boot; sizing infrastructure to meet them is Chapter 9.
+    - **Response actions.** Findings are emitted, never acted on. Blocking,
+      throttling, revocation, and applying the redaction map are Chapter 12.
+
+    ## Maintenance obligations
+
+    This record is true on its generation date and decays without three running
+    jobs:
+
+    | Obligation | Mechanism | Cadence |
+    |---|---|---|
+    | Framework pin currency | Re-verify the pinned edition; remap risk IDs to stable attack classes | Quarterly and pre-publication |
+    | Pattern library decay | `jailbreak_eval_harness.py` fails the build below declared recall floors | Every CI run |
+    | Coverage closure | `chapter5_coverage_closure_report.py` fails on any open row | Every CI run |
+
+    A coverage record without these is a snapshot that will be confidently wrong
+    within two quarters -- and still being read.
+- id: 3
+  name: 'chapter5_knowledge_assessment.md'
+  description: |-
+    Self-assessment mapped one-to-one to the chapter completion criteria: nine
+    knowledge questions, ten skills, five mindset scenarios, each carrying the
+    section that answers it.
+  implementation_notes: |-
+    Item counts match the chapter_completion_criteria block exactly (9/10/5),
+    asserted at build time so a criteria change surfaces as a failing check.
+    Questions are diagnostic rather than recall-based: several carry a plausible
+    wrong answer that a skimming reader would give, because knowing which
+    misconception you hold is more useful than a score. There is no pass mark,
+    deliberately -- the output is a list of sections to reread.
+  code: |
+    <!--
+    chapter5_knowledge_assessment.md
+    Section 0510 -- Chapter 5 Summary: AI Security Detection
+    20260719 | Detection Engineering: AI Security Detection (Section 0510 Chapter Summary) by Raghav Dinesh
+    -->
+    # Chapter 5 Knowledge Assessment
+
+    Mapped to the chapter completion criteria in `chapter_05_index.yaml`. Questions
+    are diagnostic rather than recall-based: each one has a wrong answer that a
+    reader who skimmed the chapter would plausibly give, and the answer key names
+    it, because knowing which misconception you hold is more useful than a score.
+
+    ## Knowledge (9)
+
+    **K1.** A team has full endpoint, network, cloud, and identity telemetry, and
+    green ATT&CK coverage. Why does it detect zero prompt injections?
+    *Answer:* The gap is at the telemetry layer, not the rule layer. The prompt
+    channel emits no events in any of those sources, so no rule over them can fire.
+    *Plausible wrong answer:* that the rules are missing -- which leads to writing
+    rules that test green and never fire. (5.1)
+
+    **K2.** What makes the OWASP LLM Top 10 a *detection* framework rather than an
+    awareness document?
+    *Answer:* Restating each risk as a falsifiable detection hypothesis with named
+    telemetry, a detectability class, an owner, and a tracked status. (5.2)
+
+    **K3.** Name the six detectability classes and give a risk that lands in the
+    one where coverage means an accepted-gap record.
+    *Answer:* rule, hybrid, behavioral, statistical, architectural,
+    not-detection-shaped. LLM09 is not-detection-shaped. (5.2)
+
+    **K4.** ATLAS demands a discipline the OWASP conversion does not. Which, and
+    why?
+    *Answer:* The observability audit. Large phases of the adversarial ML lifecycle
+    run on adversary infrastructure and emit no defender-observable events, so
+    techniques must be rated before coverage is claimed. (5.3)
+
+    **K5.** Why is prompt injection detection tiered rather than solved by either
+    regex or a classifier alone?
+    *Answer:* Regex is cheap, explainable, and enumerable-then-paraphrased around;
+    classifiers generalise but are opaque, slower, and untunable without retraining.
+    The hybrid fires on the union. (5.4)
+
+    **K6.** Why can no single-message detector catch incremental escalation?
+    *Answer:* No individual turn violates policy. The attack is the trajectory, so
+    it is a stateful correlation problem keyed on conversation, not a scoring
+    problem. (5.5)
+
+    **K7.** A dataset arrives with a valid hash, a valid signature, and a clean
+    build attestation. What has verification proven, and what has it not?
+    *Answer:* Proven: the provenance chain is intact. Not proven: intent. A
+    source-poisoned artifact signed by a compromised-but-legitimate publisher
+    verifies cleanly. (5.6)
+
+    **K8.** Why does no global request-rate threshold separate an extraction
+    campaign from a sanctioned batch integrator?
+    *Answer:* The integrator sends far more traffic. Any cap catching the campaign
+    flags the integrator; any cap clearing the integrator misses the campaign. The
+    correct axis is per-identity deviation plus query-pattern signals. (5.7)
+
+    **K9.** Why must redaction and detection stay separate?
+    *Answer:* A filter that scrubs content without emitting a finding converts an
+    incident into a non-event, making frequency, trend, and attribution
+    unanswerable. Detection emits and returns a map; response applies it. (5.8)
+
+    ## Skills (10)
+
+    **S1.** Run the telemetry gap assessment against a pipeline and interpret an
+    ABSENT family. (5.1)
+    **S2.** Add a row to the coverage matrix for a new risk, with hypothesis,
+    telemetry, detectability class, and owner. (5.2)
+    **S3.** Rate an ATLAS technique's observability and justify a not-observable
+    rating including its downstream pointer. (5.3)
+    **S4.** Extend the injection pattern pack with a new family and prove on the
+    labelled corpus that per-channel recall improved without precision loss. (5.4)
+    **S5.** Add a jailbreak family to the library using structural signals only, and
+    set a defensible recall floor. (5.5)
+    **S6.** Calibrate an ingestion divergence threshold from a corpus's own internal
+    spread. (5.6)
+    **S7.** Build a per-identity consumption baseline with a deviation floor, and
+    explain what the floor prevents. (5.7)
+    **S8.** Emit an output finding carrying offsets and a salted hash, and state why
+    each field exists. (5.8)
+    **S9.** Place a new detector using the four placement questions in order, and
+    demote something if the inline budget is exhausted. (5.9)
+    **S10.** Regenerate the coverage record and explain why the join is per-risk
+    rather than per-section. (5.9)
+
+    ## Security mindset (5)
+
+    **M1.** You inherit a dashboard showing full AI security coverage. What is the
+    first thing you verify?
+    *Answer:* That the telemetry underneath each claimed row actually exists.
+    Coverage claims over absent telemetry are the chapter's founding failure. (5.1)
+
+    **M2.** A stakeholder asks you to turn the one ACCEPTED_GAP row green before a
+    board review. What do you say?
+    *Answer:* That an honest accepted gap is stronger posture than a rule covering
+    nothing, and that the alternative manufactures a false claim the organisation
+    will act on. (5.2, 5.6)
+
+    **M3.** Your pattern library has not changed in six months and reports no
+    misses. Reassuring or alarming?
+    *Answer:* Alarming. Absent decay measurement, no misses means nothing is
+    measuring. The detection is the refresh loop, not the file. (5.5)
+
+    **M4.** A composite detector separates your test cases cleanly. What do you do
+    before shipping?
+    *Answer:* Ablate it, to learn which signals actually carry the detection. An
+    author wrong about attribution cannot tune the detector. (5.7)
+
+    **M5.** Which inline detectors deserve fail-closed?
+    *Answer:* Only those whose harm is unrecoverable after delivery or execution
+    *and* whose check is cheap and high-precision. Severity is the wrong axis;
+    recoverability is the right one. (5.9)
+
+    ## Scoring
+
+    There is no pass mark. Any item you cannot answer names a section to reread --
+    and any *plausible wrong answer* you would have given names a misconception
+    worth correcting before it reaches production.
+- id: 4
+  name: 'chapter5_to_chapter6_bridge.md'
+  description: |-
+    The transition: a step-by-step mapping of the Chapter 5 method onto Chapter
+    6 surfaces, the three properties that do not carry, and the through-line
+    both chapters share.
+  implementation_notes: |-
+    Written as method transfer rather than topic preview, since the risk at this
+    boundary is over-applying Chapter 5 specifics. The three changes are stated
+    as explicitly as the transfers: structured payloads restore deterministic
+    detection, the observation point returns to operated infrastructure, and
+    latency stops being the binding constraint so the placement calculus shifts
+    to ingest cost and detection lag.
+  code: |
+    <!--
+    chapter5_to_chapter6_bridge.md
+    Section 0510 -- Chapter 5 Summary: AI Security Detection
+    20260719 | Detection Engineering: AI Security Detection (Section 0510 Chapter Summary) by Raghav Dinesh
+    -->
+    # Chapter 5 to Chapter 6: What Transfers
+
+    Chapter 5 looked like a chapter about AI. It was a chapter about applying
+    detection engineering to a surface that had none. Chapter 6 does the same for
+    cloud, API, and serverless surfaces, and the method transfers intact -- which
+    is the point Part II has been making since Chapter 4.
+
+    ## The transferable method
+
+    | Step | Chapter 5 instance | Chapter 6 instance |
+    |---|---|---|
+    | Establish the telemetry gap first | Prompt channel emits nothing to traditional sources (5.1) | Control-plane and ephemeral-workload gaps in cloud and serverless |
+    | Convert a framework into a coverage map | OWASP LLM Top 10 and MITRE ATLAS (5.2, 5.3) | Cloud-relevant ATT&CK matrices and provider control frameworks |
+    | Layer detectors by what each method wins at | Pattern tier under classifier tier, hybrid union (5.4) | Deterministic control-plane rules under behavioural identity analytics |
+    | Baseline per entity where thresholds fail | Per-identity consumption envelopes (5.7) | Per-principal and per-role activity baselines |
+    | Instrument decay | Recall floors per family with a CI gate (5.5) | The same discipline for any pattern-bearing cloud detection |
+    | Place by budget and recoverability | 94ms inline cap, fail policy per detector (5.9) | Event-driven placement where the constraint is cost and lag, not request latency |
+    | Close coverage from shipped artifacts | Per-risk closure report, exit non-zero on open rows (5.9) | Identical gate over the cloud coverage map |
+
+    ## What changes
+
+    Three properties of the LLM surface do not carry, and expecting them to is the
+    main way a reader over-applies Chapter 5.
+
+    **The payload stops being semantic.** Prompt injection required semantic
+    judgement with an irreducible error rate, because the data and instruction
+    boundary had collapsed. Cloud and API attacks are structured again: an API call
+    is a typed, parameterised, attributable event. Deterministic detection recovers
+    much of the ground it lost in Chapter 5, and classifiers become the exception
+    rather than a required tier.
+
+    **The observation point moves back to infrastructure you operate.** Chapter 5
+    put the sensor in a gateway that had to be built. Cloud surfaces already emit
+    control-plane logs; the Chapter 6 problem is less about creating telemetry than
+    about the volume, latency, and cost of what already exists -- and about the
+    ephemeral workloads that vanish before anything queries them.
+
+    **Latency stops being the binding constraint.** The 120ms inline budget existed
+    because detection sat in a user request path. Cloud detection is predominantly
+    event-driven and asynchronous, so the placement calculus shifts from
+    milliseconds to ingest cost and detection lag. The four placement questions
+    still apply; only the second one changes units.
+
+    ## The through-line
+
+    Both chapters make the same argument in different vocabulary: coverage is a
+    property you measure against telemetry you verified exists, frameworks are
+    denominators rather than reading material, detectors are code with tests and a
+    decay curve, and the honest gap beats the green row. Chapter 5 made that case
+    where the tooling was absent. Chapter 6 makes it where the tooling is abundant
+    and the failure mode inverts -- from having no telemetry to drowning in it.
+common_mistakes:
+- id: 1
+  description: |-
+    Reporting the chapter result as ten of ten covered rather than ten of ten
+    accounted for.
+  why_it_happens: |-
+    Covered is the word stakeholders ask for, the difference sounds pedantic in
+    a status meeting, and eight active rows out of ten genuinely is good work.
+  consequence: |-
+    The organisation acts on a claim that two rows do not support. LLM09 has no
+    detector at all, and the first incident involving model-asserted falsehoods
+    arrives against a documented expectation that detection would have caught
+    it.
+  correct_approach: |-
+    Report accounted-for, and treat the partial and accepted-gap rows as the
+    credibility of the record rather than blemishes on it. A program that can
+    show an honest gap has demonstrated it understands its own detections.
+- id: 2
+  description: |-
+    Treating the chapter as a list of AI security techniques rather than as a
+    method applied to a new surface.
+  why_it_happens: |-
+    The techniques are the memorable part, they map neatly to a framework, and
+    a technique list is easier to summarise to a team than a method.
+  consequence: |-
+    The reader carries prompt injection patterns and canary tricks into Chapter
+    6, where none apply, and misses the transferable steps -- telemetry first,
+    framework as coverage map, layered detectors, per-entity baselines,
+    instrumented decay, budgeted placement, computed closure.
+  correct_approach: |-
+    Carry the method. Every mechanism in this chapter came from Chapters 1
+    through 4; what changed was the telemetry family and the collapsed
+    data-instruction boundary. The bridge deliverable maps the transfer step by
+    step.
+- id: 3
+  description: |-
+    Publishing the coverage record without the maintenance jobs behind it.
+  why_it_happens: |-
+    The record is accurate on the day it is generated, it looks like a
+    deliverable rather than a process, and the jobs that keep it true live in
+    CI where nobody reviewing the record can see them.
+  consequence: |-
+    Framework editions move, pattern families decay, detectors get retired in
+    refactors, and the record keeps asserting active coverage that no longer
+    exists -- confidently wrong within two quarters, and still being read.
+  correct_approach: |-
+    Ship the record with its three obligations wired: framework pin re-verified
+    on a cadence, the decay gate failing the build below recall floors, and the
+    closure gate failing on any open row. The record is an output of running
+    jobs, not a document.
+- id: 4
+  description: |-
+    Treating the deferrals as gaps in the chapter rather than as scoped
+    handoffs.
+  why_it_happens: |-
+    A reader reaching the end wants completeness, and agentic detection, scale
+    engineering, and response all feel like they should have been finished here.
+  consequence: |-
+    Either the team builds them ad hoc without the chapters that treat them
+    properly -- response automation wired into a detector, scale decisions made
+    from a diagram -- or the chapter reads as incomplete and its actual result
+    gets discounted.
+  correct_approach: |-
+    Read the deferral table as a roadmap with owners. Each exclusion has a
+    stated reason and a chapter, and two of them (response coupling, scale
+    assumptions) are things this chapter deliberately did not do because doing
+    them early makes both harder to change.
+- id: 5
+  description: |-
+    Concluding that AI security detection requires a new product category.
+  why_it_happens: |-
+    It is the prevailing market message, the surface is genuinely novel, and
+    buying a product is faster than building telemetry and a coverage map.
+  consequence: |-
+    A standalone AI security console recreates the Section 4.1 lock-in problem
+    on the newest surface, makes cross-domain correlation structurally
+    inexpressible, and leaves the program unable to answer whether an injection
+    finding and anomalous tool calls belong to the same identity.
+  correct_approach: |-
+    Treat products as telemetry sources feeding the platform, never as
+    destinations. What the surface actually requires is new telemetry, a
+    coverage map, and the detection lifecycle the program should already have --
+    which is what nine sections of evidence demonstrate.
+
+section_summary:
+  compact: |-
+    Chapter 5 took a surface that a mature detection program could not see at
+    all and left it measured. The order of work was telemetry first, frameworks
+    as coverage maps second, layered detectors third, budgeted placement fourth
+    -- and reversing any two of those steps produces rules that test green and
+    never fire. Five detection families emerged, each teaching a different
+    lesson about method selection: layered union scoring for injection,
+    contrastive calibration and instrumented decay for jailbreaks, deterministic
+    build-time verification for poisoning, per-identity baselines instead of
+    global thresholds for extraction, and completions treated as egress with
+    detection kept separate from redaction. Assembled into a gateway
+    architecture with a 120ms inline cap consuming 94ms and a fail policy set by
+    recoverability rather than severity, the result is a coverage record of ten
+    rows accounted for: eight active with named detectors, one partial by
+    design, one honest accepted gap, none open, generated by a gate rather than
+    written by an author. Agentic detection, scale engineering, and response
+    actions are deferred with owners. And the chapter's claim is now
+    demonstrated rather than asserted -- every mechanism came from Chapters 1
+    through 4, so AI security detection is detection engineering with new
+    telemetry, not a new discipline.
+  key_takeaways:
+  - 'The chapter result is a coverage position, not a technique list: ten of ten
+    accounted for, eight active, one partial by design, one accepted gap, zero
+    open -- computed by a CI gate rather than asserted'
+  - 'Report accounted-for rather than covered; the two non-active rows are what
+    make the record credible, not what blemish it'
+  - 'The order of work is the transferable part -- telemetry, then coverage map,
+    then layered detectors, then budgeted placement -- and it survives contact
+    with any new surface'
+  - 'Every artifact needs a maintenance job behind it: framework pin recheck,
+    decay gate, closure gate, or the record is confidently wrong within two
+    quarters'
+  - 'The deferrals are a roadmap with owners: agentic detection as a separate
+    enumeration, scale to Chapter 9, response to Chapter 12, classifier
+    construction to Chapter 7'
+  - 'AI security detection is detection engineering applied to new telemetry --
+    the coverage discipline, platform, lifecycle, and open standards all came
+    from Chapters 1 through 4, and a team that cannot run a detection lifecycle
+    will not be rescued by a product'
+
+preview_chapter_06:
+  title: 'Chapter 6: Detection for Modern Attack Surfaces -- Cloud, API, Serverless'
+  preview: |-
+    Chapter 6 applies the same method where the tooling is abundant rather than
+    absent, and the failure mode inverts from having no telemetry to drowning in
+    it. Cloud control planes, API gateways, and serverless platforms already
+    emit enormous volumes of structured, attributable events -- so the work
+    shifts from creating telemetry to selecting, costing, and correlating what
+    exists, and to the ephemeral workloads that disappear before anything
+    queries them. The transferable steps carry: establish the gap, convert a
+    framework into a coverage map, layer detectors by what each method wins at,
+    baseline per principal where thresholds fail, instrument decay, place by
+    constraint, and close coverage from shipped artifacts. Three things change.
+    Payloads are structured again, so deterministic detection recovers the
+    ground it ceded to semantic judgement in Chapter 5. The observation point
+    returns to infrastructure the defender operates. And latency stops binding,
+    so placement is decided by ingest cost and detection lag instead of
+    milliseconds in a request path.
+
+metadata:
+  cross_chapter_references:
+  - 'Chapter 1: the detection lifecycle and coverage-map discipline this chapter
+    reapplied to a new framework and a new surface'
+  - 'Chapter 2: the platform and correlation engine every async detector in the
+    chapter runs on'
+  - 'Chapter 3: detection-as-code -- the rule schema, tests, and CI gates
+    holding the pattern libraries and coverage matrix together'
+  - 'Chapter 4: OCSF and Sigma, the reason these detections are portable and a
+    standalone AI console was never an option'
+  - 'Sections 5.1-5.9: the nine sections this summary consolidates'
+  forward_references:
+  - 'Chapter 6: cloud, API, and serverless surfaces -- the same method where
+    telemetry is abundant rather than absent'
+  - 'Chapter 7: classifier construction behind the contracts Sections 5.4 and
+    5.5 consumed'
+  - 'Chapter 9: throughput, scaling, and cost engineering for the gateway
+    architecture'
+  - 'Chapter 10: variance-aware threshold setting behind the calibration
+    approaches used in 5.5, 5.6, and 5.7'
+  - 'Chapter 12: response orchestration, which owns everything past the findings
+    this chapter emits'
