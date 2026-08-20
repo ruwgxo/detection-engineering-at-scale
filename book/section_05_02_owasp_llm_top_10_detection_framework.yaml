@@ -1,0 +1,1039 @@
+# section_05_02_owasp_llm_top_10_detection_framework.yaml
+
+---
+document_info:
+  title: 'OWASP LLM Top 10 as a Detection Framework'
+  chapter: 5
+  section: 2
+  section_code: '0502'
+  author: 'Raghav Dinesh'
+  github: 'https://github.com/ruwgxo/detection-engineering-at-scale'
+  license: 'MIT'
+  version: '1.0'
+  created: '2026-07-16'
+  estimated_pages: 5
+  estimated_reading_time: '35-45 minutes'
+
+section_overview:
+  one_line_summary: |-
+    The OWASP LLM Top 10 becomes useful to a detection program only when it is
+    read as a coverage map -- each of the ten risks restated as a detection
+    hypothesis with named telemetry, a detectability class, an owning detector,
+    and a tracked status -- and the resulting matrix is version-pinned,
+    lifecycle-managed, and honest about the risks that are not detection-shaped.
+  why_this_section_exists: |-
+    Section 5.1 made the LLM detection gap visible and specified the telemetry
+    that closes it. What it did not provide is a way to say 'covered' with a
+    straight face. A detection program needs an external, community-maintained
+    enumeration of the risks it claims to cover, or its coverage claims are
+    self-graded homework. For the LLM surface, that enumeration is the OWASP
+    Top 10 for LLM Applications -- the same role MITRE ATT&CK plays for
+    intrusion detection in Chapter 1.
+
+    The problem is that the LLM Top 10 arrives shaped as an awareness document:
+    ten narrative risk descriptions written for developers and security leaders,
+    not ten detection specifications. Most teams consume it as a compliance
+    checklist -- read the list, nod, attest -- which produces exactly zero new
+    detection coverage. This section does the conversion work: it restates each
+    risk as a detection hypothesis, classifies how detectable each one actually
+    is, binds each to the telemetry families from Section 5.1 and to the section
+    of this chapter that builds its detector, and packages the result as a
+    living coverage matrix the platform tracks the way it tracks ATT&CK
+    coverage. The honest entries matter most: a risk the program cannot detect
+    and has decided not to detect is recorded as an accepted gap, because on a
+    coverage map, silence is the failure mode.
+  position_in_chapter: |-
+    Second section of Chapter 5 and the first half of the chapter's framework
+    layer. Section 5.1 established the gap and the telemetry inventory; this
+    section converts the OWASP LLM Top 10 into the coverage map that makes the
+    gap trackable. Section 5.3 does the same conversion for MITRE ATLAS and
+    unifies the two into a single platform view. Sections 5.4 through 5.8 then
+    build the detectors this section's matrix assigns to them, and Section 5.10
+    consolidates the completed map. Nothing in this section builds a detector --
+    it builds the contract the detectors are graded against.
+
+learning_objectives:
+  knowledge:
+  - 'Explain the difference between consuming a risk framework as a compliance
+    checklist and operating it as a detection coverage map'
+  - 'Name the ten risks of the OWASP LLM Top 10 2025 edition and give the
+    one-line detection reading of each'
+  - 'Define the detectability classes -- rule, hybrid, behavioral, statistical,
+    architectural, not-detection-shaped -- and classify any given risk into one
+    with a defensible rationale'
+  - 'Explain why LLM09 (Misinformation) is recorded as an accepted gap rather
+    than forced into a detection rule, and why recording it beats omitting it'
+  - 'State the restatement pattern that turns a narrative risk description into
+    a testable detection hypothesis with telemetry requirements'
+  - 'Explain why detections bind to attack classes while citations pin the
+    framework edition, and what breaks when either half is skipped'
+  - 'Describe where the agentic extension (the separate OWASP agentic-
+    applications list) sits relative to this chapter''s scope'
+  skills:
+  - 'Build and maintain the LLM Top 10 coverage matrix as a version-pinned,
+    lifecycle-managed detection-as-code artifact'
+  - 'Run the coverage gap report against a declared environment and read its
+    REACHABLE / BLOCKED / ACCEPTED_GAP verdicts as a work queue'
+  - 'Write the detectability classification for a new or updated risk entry'
+  - 'Apply the Sigma tagging convention so every rule in the chapter announces
+    which risk it covers and coverage queries become platform queries'
+  security_mindset:
+  - 'Treat a coverage claim without a named framework entry, telemetry source,
+    and tested detection behind it as marketing, not coverage'
+  - 'Respect the risks that are not detection-shaped -- an honest accepted gap
+    is stronger security posture than a noisy rule pretending to cover it'
+  - 'Assume the framework will change under you; pin what you cite, bind what
+    you build to the attack class, and schedule the recheck'
+
+prerequisites:
+- 'Section 5.1: the LLM attack surface map and the five mandatory telemetry
+  families -- the matrix binds risks to exactly those families'
+- 'Chapter 1, Section 1.4: ATT&CK as architecture -- this section reapplies
+  that coverage-mapping discipline to a different framework'
+- 'Chapter 3: detection-as-code -- the matrix is a versioned artifact under the
+  same lifecycle as any rule'
+- 'Chapter 4, Sections 4.5-4.6: Sigma rule anatomy, extended here with a risk-
+  tagging convention'
+- 'Working Python and YAML fluency for the deliverables'
+- 'A copy of the current OWASP LLM Top 10 text for reference while reading --
+  this section restates the risks for detection, it does not reproduce them'
+
+prose_content:
+  part_1:
+    title: 'From Awareness Document to Coverage Map'
+    body: |-
+      Every security team that ships an LLM application has, somewhere, a slide
+      that says 'aligned with the OWASP LLM Top 10'. Ask what that means
+      operationally and the answer is usually a design review that walked the
+      ten risks once, produced some mitigations, and closed. That is a
+      legitimate use of the framework -- for application security. For a
+      detection program it produces nothing, because detection coverage is not
+      a property you attest to at design time; it is a property you measure
+      continuously against events, and measurement needs a denominator.
+
+      The denominator is what a good framework provides. Chapter 1 made this
+      argument for MITRE ATT&CK: the framework's value to detection engineering
+      is not the reading material, it is the enumeration -- a community-
+      maintained, externally-versioned list of the things your program should
+      be able to see, against which your actual coverage can be scored and your
+      gaps made visible. The OWASP Top 10 for LLM Applications is the natural
+      denominator for the LLM surface. It is the most widely adopted enumeration
+      of LLM application risk, it is maintained by an active project rather than
+      frozen in a paper, and its entries map cleanly onto the attack surface
+      inventory Section 5.1 built.
+
+      The conversion from awareness document to coverage map is mechanical once
+      stated, and the rest of this section performs it. Each risk is restated as
+      a detection hypothesis: a falsifiable claim about what observable events
+      an exploitation of that risk produces. Each hypothesis names the telemetry
+      families -- from the Section 5.1 inventory -- it requires. Each risk gets
+      a detectability class, because the honest answer to 'can we detect this'
+      differs materially across the ten. And each row gets an owner: the section
+      of this chapter that builds the detector, or an explicit accepted-gap
+      record when no detector is warranted. The output is the coverage matrix --
+      a YAML artifact the platform tracks, the CI pipeline validates, and the
+      gap report renders into a work queue.
+  part_2:
+    title: 'The Ten Risks, Read with Detection Eyes'
+    body: |-
+      The 2025 edition (v2.0) of the list -- the current edition, published by
+      the OWASP GenAI Security Project and designated LLM01:2025 through
+      LLM10:2025 -- is the version this chapter pins. What follows is not a
+      summary of the framework text; it is the detection reading of each entry,
+      which is a different document. The framework asks 'what can go wrong'.
+      The detection engineer asks 'what would I see'.
+
+      LLM01 Prompt Injection is the marquee entry and the highest-exploitation
+      risk on the list: hostile instructions in the prompt channel, direct or
+      indirect. Its observable is the prompt event itself, which is why Section
+      5.1 made full-context prompt capture non-negotiable. LLM02 Sensitive
+      Information Disclosure inverts the channel: the observable is the
+      completion, scanned for content that should not leave. LLM03 Supply Chain
+      and LLM04 Data and Model Poisoning are the two upstream entries; their
+      observables are pipeline provenance events -- dataset ingestion,
+      fine-tune jobs, registry mutations -- not user traffic, which is why they
+      belong to Section 5.6 and why a program without pipeline telemetry is
+      blind to both regardless of rule count. LLM05 Improper Output Handling is
+      about what downstream components do with model output; its detection
+      reading is rules on the consumption path -- completions flowing into
+      execution or rendering sinks -- which makes completion and tool-call
+      events its telemetry. LLM06 Excessive Agency is the agentic entry: a
+      model empowered to act, acting beyond intent. Its observable is the tool
+      call event stream, read as an action log. LLM07 System Prompt Leakage has
+      the cleanest detection reading on the list: seed the system prompt with a
+      canary marker and scan completions for it, plus pattern-match the
+      extraction attempts on the prompt side. LLM08 Vector and Embedding
+      Weaknesses is mostly an architecture problem -- the weakness lives in how
+      the RAG layer is built -- but its exploitation path is indirect injection
+      through retrieved content, which the Section 5.4 context-scoring detector
+      covers; the matrix records that split honestly as partial-by-design.
+      LLM09 Misinformation is the entry that tests the program's honesty, and
+      part 3 returns to it. LLM10 Unbounded Consumption is the resource entry:
+      extraction-scale querying, quota abuse, denial-of-wallet. Its observable
+      is token accounting per identity, which is Section 5.7's raw material.
+
+      Reading the list this way surfaces the pattern that drives the rest of
+      the chapter: the ten risks collapse onto the five telemetry families of
+      Section 5.1. No risk requires telemetry the inventory missed, and every
+      family the inventory named is load-bearing for at least one risk. That
+      correspondence is not luck -- it is evidence the attack surface map and
+      the community's risk enumeration describe the same territory, which is
+      exactly the property a denominator needs.
+  part_3:
+    title: 'Detectability Classes: Not Every Risk Is a Rule'
+    body: |-
+      The single most damaging way to operate a risk framework is to force
+      every entry through the same detection mold -- usually 'write a rule per
+      risk' -- because the mold fits some entries and mangles others. The
+      coverage matrix therefore carries a detectability class per risk, and the
+      class determines what 'covered' is allowed to mean for that row.
+
+      Six classes are enough for this list. Rule-detectable risks have
+      observables that deterministic logic captures well: a system-prompt
+      canary appearing in a completion (LLM07), a registry mutation without a
+      signed provenance chain (LLM03), a completion flowing into an execution
+      sink (LLM05). Hybrid risks need a deterministic tier for the known and a
+      learned tier for the novel: injection phrasings (LLM01) and sensitive-
+      content detection (LLM02) both live here, and Sections 5.4 and 5.8 build
+      exactly that two-tier shape. Behavioral risks are invisible per-event and
+      visible against a baseline: excessive agency (LLM06) and unbounded
+      consumption (LLM10) are properties of patterns, not of any single
+      request. Statistical risks are batch judgements at pipeline boundaries:
+      poisoning indicators (LLM04) are distribution-level claims about a
+      dataset, not streaming detections. Architectural risks are weaknesses
+      whose fix is design, not detection -- LLM08's embedding-layer weaknesses
+      are not events at all, though their exploitation path is, so the matrix
+      splits the row: the path is covered, the weakness is an architecture
+      control, and the status says partial-by-design rather than pretending
+      otherwise.
+
+      The sixth class is the one that earns the program its credibility:
+      not-detection-shaped. LLM09 Misinformation is a real risk -- a model
+      confidently asserting falsehoods that downstream decisions consume -- but
+      it has no security-event observable. Whether an assertion is false is not
+      a property any telemetry family carries; it is an evaluation and
+      grounding problem, owned by model quality processes, not by the
+      detection platform. The wrong move is a keyword rule that fires on
+      hedging language and drowns the queue in noise while covering nothing.
+      The right move is an accepted-gap record: the risk is named, the
+      rationale is written, the owning control (evaluation pipeline, grounding
+      architecture) is referenced, and the coverage report says ACCEPTED_GAP
+      in capital letters where everyone can see it. A program that can show an
+      honest accepted gap has demonstrated it knows what its detections do. A
+      program with ten green rows has demonstrated it can fill in a
+      spreadsheet.
+  part_4:
+    title: 'From Risk to Hypothesis: The Restatement Pattern'
+    body: |-
+      A framework entry becomes engineerable at the moment it is restated as a
+      detection hypothesis -- a falsifiable claim in the shape 'exploitation of
+      this risk produces events with these properties in this telemetry
+      family'. The restatement pattern has four moves, and running them against
+      one entry end-to-end shows the mechanics.
+
+      Take LLM10 Unbounded Consumption. Move one: name the exploitation
+      behaviour concretely -- an identity drives model usage far outside its
+      established pattern, whether for extraction-scale querying, quota fraud,
+      or denial-of-wallet. Move two: name the observable -- per-request token
+      accounting attributed to an identity, which is the third telemetry family
+      in the Section 5.1 inventory. Move three: state the hypothesis
+      falsifiably -- 'sustained consumption by one identity that exceeds its
+      own baseline envelope, or the envelope of its peer group, is observable
+      in token accounting events and distinguishes abuse from legitimate heavy
+      use when combined with diversity features'. Move four: name what would
+      falsify or bound it -- sanctioned bulk consumers will trip naive volume
+      thresholds, so the hypothesis stands only with an allowlist mechanism
+      and diversity features, which is precisely the design constraint Section
+      5.7 inherits. The hypothesis is now something a detector can be built to,
+      tested against, and graded on -- none of which was true of the narrative
+      risk description.
+
+      Two disciplines keep restatement honest. First, the hypothesis must name
+      its telemetry family from the Section 5.1 inventory by its exact
+      identifier, because the gap report computes reachability by set
+      arithmetic on those identifiers -- prose approximations break the
+      tooling. Second, the hypothesis must stay inside the risk's detection
+      reading and out of the owning section's design space. The matrix row for
+      LLM01 says 'tiered scoring over prompt events, owner 5.4'; it does not
+      specify the regex families or the classifier architecture, because that
+      is Section 5.4's job and duplicating it here is exactly the drift the
+      chapter structure exists to prevent. The matrix is a contract, and good
+      contracts specify the what and leave the how to the owner.
+  part_5:
+    title: 'The Matrix as a Living Artifact: Statuses, CI, and Sigma Tags'
+    body: |-
+      A coverage matrix built once is a snapshot that starts rotting the day it
+      ships. The matrix earns the word 'living' through three bindings, all of
+      them Chapter 3 discipline applied to a new artifact.
+
+      The first binding is status. Every row carries one of a small closed set:
+      planned (the detector is assigned but not yet shipped), active (the
+      detector is deployed with passing tests), partial-by-design (part of the
+      risk is covered, the remainder is explicitly an architecture control),
+      accepted_gap (no detector, rationale on record), and blocked (required
+      telemetry absent -- computed, not declared, by the gap report). Statuses
+      change only through pull requests, which means the coverage history is
+      the git history, and 'when did we start covering LLM07' is a one-command
+      answer. The second binding is CI. The matrix lives in the repo beside the
+      rules, and the pipeline enforces its invariants on every change: the YAML
+      parses, every telemetry identifier resolves against the Section 5.1
+      inventory, every owning section exists, every accepted_gap row carries a
+      rationale, and -- the check that catches real rot -- every risk whose
+      status says active has at least one deployed rule tagged to it. A matrix
+      that claims active coverage with no tagged rule fails the build, which
+      converts silent drift into a red pipeline.
+
+      The third binding is the tag convention, and it is what makes the second
+      binding checkable. Every Sigma rule this chapter ships carries a tag
+      binding it to the risk it covers, in the same way Chapter 4's rules carry
+      ATT&CK technique tags. The convention (deliverable 4) uses a namespaced
+      tag carrying the framework, the pinned edition, and the risk identifier,
+      so a platform query can answer 'show me every rule covering LLM02' and
+      the CI check can answer 'does anything actually cover what the matrix
+      claims'. The tag carries the edition deliberately: when the framework
+      revises and an old risk identifier is renumbered or retired, edition-
+      tagged rules keep their meaning and the migration becomes a mechanical,
+      reviewable rename rather than an archaeology project. Coverage queries
+      thereby become platform queries -- the same move Chapter 1 made for
+      ATT&CK -- and the LLM surface stops being a special case anyone has to
+      remember to check.
+  part_6:
+    title: 'Version Volatility and the Agentic Horizon'
+    body: |-
+      The LLM Top 10 is a fast-moving anchor -- the book's market_currency
+      policy already names it -- and this section is where that policy becomes
+      mechanism. The framework has already been through one major revision, the
+      current edition reorganised and renumbered entries relative to the first,
+      and the underlying attack landscape moves faster than any annual list.
+      A detection program that hard-codes today's list into its structure will
+      be describing its coverage in a dead dialect within a couple of years.
+
+      The mechanism is a two-sided pin. Detections bind to attack classes --
+      the stable identifiers of the Section 5.1 attack surface map, which
+      change only when the attack landscape genuinely changes. Citations pin
+      the framework edition -- the matrix's framework_pin block records the
+      edition, the designation style, the date pinned, and the recheck cadence,
+      and every Sigma tag carries the edition string. When the next edition
+      lands, the migration is bounded and mechanical: diff the new list against
+      the pinned one, remap risk identifiers to the unchanged attack classes,
+      update the tags in one reviewed change, and re-verify the accepted-gap
+      rationales still hold. Nothing about the detectors themselves moves,
+      because they were never bound to the list -- only described by it. Skip
+      either side of the pin and one of two failures follows: bind detections
+      to risk IDs and a renumbering breaks every dashboard; cite the framework
+      without an edition and two teams will argue about what LLM07 means while
+      looking at different documents.
+
+      The horizon item is agency. The OWASP GenAI project maintains a separate
+      top-ten for agentic applications, and the boundary between the two lists
+      is the boundary between this chapter and the next frontier: LLM06 covers
+      excessive agency as an application risk, but multi-agent orchestration,
+      inter-agent trust, and tool-ecosystem attacks are their own enumeration
+      with their own detection readings. This chapter deliberately stops at the
+      LLM application list. The matrix structure, the detectability classes,
+      the restatement pattern, and the tag convention all transfer unchanged
+      when the program is ready to onboard the agentic list -- which is the
+      point of building the machinery framework-agnostically. Section 5.3 makes
+      that transfer immediately, applying the identical conversion to MITRE
+      ATLAS and unifying the results into one platform view.
+
+reference_materials:
+  table_1:
+    title: 'The OWASP LLM Top 10 (2025 Edition), Read for Detection'
+    description: |-
+      The ten risks of the pinned edition with the detection engineer's
+      one-line reading of each: what exploitation would make observable, and
+      where. The framework text describes the risks; this table describes the
+      evidence.
+    columns:
+    - 'Risk ID'
+    - 'Name'
+    - 'Detection reading -- what you would see'
+    - 'Primary telemetry'
+    rows:
+    - - 'LLM01'
+      - 'Prompt Injection'
+      - 'Hostile instructions present in the user turn or in any content
+        assembled into the context window'
+      - 'prompt_events'
+    - - 'LLM02'
+      - 'Sensitive Information Disclosure'
+      - 'Content in a completion that policy says must not leave -- PII,
+        secrets, privileged business data'
+      - 'completion_events'
+    - - 'LLM03'
+      - 'Supply Chain'
+      - 'A model, dataset, or adapter entering the pipeline without verifiable
+        provenance, or a registry mutation outside the sanctioned path'
+      - 'pipeline_provenance'
+    - - 'LLM04'
+      - 'Data and Model Poisoning'
+      - 'Statistical integrity indicators at pipeline stage boundaries --
+        distribution shift, label anomalies, trigger patterns -- or canary
+        drift post-deployment'
+      - 'pipeline_provenance'
+    - - 'LLM05'
+      - 'Improper Output Handling'
+      - 'A completion flowing into an execution or rendering sink without the
+        sanctioned validation step'
+      - 'completion_events, tool_call_events'
+    - - 'LLM06'
+      - 'Excessive Agency'
+      - 'Tool invocations outside the identity''s or application''s established
+        action envelope'
+      - 'tool_call_events'
+    - - 'LLM07'
+      - 'System Prompt Leakage'
+      - 'A system-prompt canary marker appearing in any completion; extraction-
+        attempt patterns on the prompt side'
+      - 'completion_events, prompt_events'
+    - - 'LLM08'
+      - 'Vector and Embedding Weaknesses'
+      - 'The weakness itself is architectural; its exploitation path is
+        indirect injection through retrieved content, visible in tagged
+        context sources'
+      - 'prompt_events'
+    - - 'LLM09'
+      - 'Misinformation'
+      - 'No security-event observable -- factuality is not a telemetry
+        property; owned by evaluation and grounding controls'
+      - 'none (accepted gap)'
+    - - 'LLM10'
+      - 'Unbounded Consumption'
+      - 'Per-identity consumption exceeding its own or its peer group''s
+        baseline envelope'
+      - 'token_accounting'
+  table_2:
+    title: 'Detectability Classes'
+    description: |-
+      The six classes the matrix uses, what membership means for the detector,
+      and which risks land in each. The class determines what the word
+      'covered' is allowed to mean for a row.
+    columns:
+    - 'Class'
+    - 'Definition'
+    - 'What ''covered'' means'
+    - 'Risks in class'
+    rows:
+    - - 'rule'
+      - 'Deterministic logic over single events captures the observable well'
+      - 'Deployed, tested rules; false-positive budget managed by tuning'
+      - 'LLM03, LLM05, LLM07'
+    - - 'hybrid'
+      - 'Deterministic tier for known patterns plus learned tier for novel
+        variants'
+      - 'Both tiers deployed and measured; per-tier precision, recall, latency
+        on record'
+      - 'LLM01, LLM02'
+    - - 'behavioral'
+      - 'Invisible per event; visible as deviation from a per-entity baseline'
+      - 'Baselines built and refreshed; anomaly scoring deployed with
+        allowlist mechanism'
+      - 'LLM06, LLM10'
+    - - 'statistical'
+      - 'Batch judgement at a pipeline stage boundary, not a streaming
+        detection'
+      - 'Integrity gates wired into the pipeline; canaries maintained'
+      - 'LLM04'
+    - - 'architectural'
+      - 'The weakness is a design property, not an event; only its
+        exploitation path emits telemetry'
+      - 'Exploitation path covered by a detector; weakness itself referenced
+        to an architecture control; status partial-by-design'
+      - 'LLM08'
+    - - 'not-detection-shaped'
+      - 'No security-event observable exists for the risk'
+      - 'Accepted-gap record: rationale written, owning non-detection control
+        named, visible in every coverage report'
+      - 'LLM09'
+  table_3:
+    title: 'The Coverage Matrix, Rendered'
+    description: |-
+      The full risk-to-owner binding as shipped in deliverable 1: telemetry
+      requirements from the Section 5.1 inventory, detection method family,
+      owning section, and initial status. This table is the human view; the
+      YAML artifact is the machine view the CI pipeline and gap report consume.
+    columns:
+    - 'Risk'
+    - 'Required telemetry'
+    - 'Detection method family'
+    - 'Owner'
+    - 'Status'
+    rows:
+    - - 'LLM01'
+      - 'prompt_events'
+      - 'Regex prefilter + classifier scoring, tiered'
+      - '5.4'
+      - 'planned'
+    - - 'LLM02'
+      - 'completion_events'
+      - 'Output PII/secret scoring, pattern + NER tiers'
+      - '5.8'
+      - 'planned'
+    - - 'LLM03'
+      - 'pipeline_provenance'
+      - 'Provenance verification rules + registry mutation alerts'
+      - '5.6'
+      - 'planned'
+    - - 'LLM04'
+      - 'pipeline_provenance'
+      - 'Stage-boundary integrity gates + behavioural canaries'
+      - '5.6'
+      - 'planned'
+    - - 'LLM05'
+      - 'completion_events, tool_call_events'
+      - 'Output-consumption path rules (exec/render sinks)'
+      - '5.8'
+      - 'planned'
+    - - 'LLM06'
+      - 'tool_call_events'
+      - 'Action-log rules + tool-call baselines'
+      - '5.8-5.9'
+      - 'planned'
+    - - 'LLM07'
+      - 'completion_events, prompt_events'
+      - 'System-prompt canary scan in outputs + extraction-attempt patterns'
+      - '5.8 (attempt patterns: 5.4)'
+      - 'planned'
+    - - 'LLM08'
+      - 'prompt_events'
+      - 'Context-source scoring covers the exploitation path; weakness is an
+        architecture control'
+      - '5.4 (exploitation path only)'
+      - 'partial-by-design'
+    - - 'LLM09'
+      - 'none'
+      - 'None -- evaluation/grounding process control'
+      - 'accepted_gap'
+      - 'accepted_gap'
+    - - 'LLM10'
+      - 'token_accounting'
+      - 'Per-identity consumption baselines + rate anomaly scoring'
+      - '5.7'
+      - 'planned'
+  table_4:
+    title: 'Version Volatility: What Is Pinned, What Stays Stable'
+    description: |-
+      The two-sided pin in one view: which artifacts bind to the stable attack
+      classes, which carry the pinned framework edition, and what event
+      triggers a recheck of each.
+    columns:
+    - 'Artifact'
+    - 'Binds to'
+    - 'Carries edition pin'
+    - 'Recheck trigger'
+    rows:
+    - - 'Detectors (rules, classifiers, baselines)'
+      - 'Attack classes (Section 5.1 surface map)'
+      - 'No -- deliberately framework-agnostic'
+      - 'Attack landscape change, not framework revision'
+    - - 'Coverage matrix rows'
+      - 'Attack classes, telemetry families'
+      - 'Yes -- framework_pin block with date and cadence'
+      - 'Quarterly cadence; any framework release announcement'
+    - - 'Sigma rule tags'
+      - 'Detectors (attached per rule)'
+      - 'Yes -- edition string inside the tag'
+      - 'Framework revision: mechanical remap in one reviewed change'
+    - - 'Accepted-gap rationales'
+      - 'The named risk and its owning non-detection control'
+      - 'Yes -- rationale cites the pinned entry text'
+      - 'Every recheck: confirm the rationale still holds against the current
+        edition'
+    - - 'Book prose citing the framework'
+      - 'Attack classes for mechanisms; edition only where designations appear'
+      - 'Explicit edition citation where risk IDs are named'
+      - 'Pre-publication market_currency pass'
+
+deliverables:
+  deliverable_1:
+    title: 'OWASP LLM Top 10 Coverage Matrix'
+    filename: 'owasp_llm_top10_coverage_matrix.yaml'
+    description: |-
+      The living coverage artifact: all ten risks of the pinned edition bound
+      to their telemetry requirements, detectability class, detection method
+      family, owning section, and status, under a framework_pin block that
+      records the edition, pin date, and recheck cadence. This is the machine
+      view the gap report renders and the CI pipeline validates.
+    implementation_notes: |-
+      The telemetry identifiers are the exact family names from the Section
+      5.1 inventory -- the gap report computes reachability by set arithmetic
+      on them, so prose approximations break the tooling. Statuses come from
+      the closed set defined in part 5; 'blocked' is never written into this
+      file because it is computed per environment by the gap report. Changes
+      to this file travel by pull request only, so coverage history is git
+      history.
+    code: |
+      # owasp_llm_top10_coverage_matrix.yaml
+      # Section 0502 -- OWASP LLM Top 10 as a Detection Framework
+      # 20260716 | Detection Engineering: AI Security Detection (Section 0502 OWASP LLM Top 10 as Detection Framework) by Raghav Dinesh
+      #
+      # The living coverage artifact for Chapter 5. Framework version is PINNED:
+      # detections bind to attack classes; risk IDs cite the pinned edition.
+      framework_pin:
+        framework: 'OWASP Top 10 for LLM Applications'
+        edition: '2025 (v2.0)'
+        designation_style: 'LLM01:2025 .. LLM10:2025'
+        pinned_on: '2026-07-16'
+        recheck: 'quarterly and before publication (book market_currency cadence)'
+      coverage_matrix:
+        LLM01:
+          name: 'Prompt Injection'
+          detectability_class: 'hybrid'
+          required_telemetry: ['prompt_events']
+          detection_method: 'regex prefilter + classifier scoring (tiered)'
+          owning_section: '5.4'
+          status: 'planned'
+        LLM02:
+          name: 'Sensitive Information Disclosure'
+          detectability_class: 'hybrid'
+          required_telemetry: ['completion_events']
+          detection_method: 'output PII/secret scoring, pattern + NER tiers'
+          owning_section: '5.8'
+          status: 'planned'
+        LLM03:
+          name: 'Supply Chain'
+          detectability_class: 'rule'
+          required_telemetry: ['pipeline_provenance']
+          detection_method: 'provenance verification rules + registry mutation alerts'
+          owning_section: '5.6'
+          status: 'planned'
+        LLM04:
+          name: 'Data and Model Poisoning'
+          detectability_class: 'statistical'
+          required_telemetry: ['pipeline_provenance']
+          detection_method: 'stage-boundary integrity gates + behavioural canaries'
+          owning_section: '5.6'
+          status: 'planned'
+        LLM05:
+          name: 'Improper Output Handling'
+          detectability_class: 'rule'
+          required_telemetry: ['completion_events', 'tool_call_events']
+          detection_method: 'output-consumption path rules (exec/render sinks)'
+          owning_section: '5.8'
+          status: 'planned'
+        LLM06:
+          name: 'Excessive Agency'
+          detectability_class: 'behavioral'
+          required_telemetry: ['tool_call_events']
+          detection_method: 'action-log rules + tool-call baselines'
+          owning_section: '5.8-5.9'
+          status: 'planned'
+        LLM07:
+          name: 'System Prompt Leakage'
+          detectability_class: 'rule'
+          required_telemetry: ['completion_events', 'prompt_events']
+          detection_method: 'system-prompt canary markers scanned in outputs + extraction-attempt patterns'
+          owning_section: '5.8 (attempt patterns: 5.4)'
+          status: 'planned'
+        LLM08:
+          name: 'Vector and Embedding Weaknesses'
+          detectability_class: 'architectural'
+          required_telemetry: ['prompt_events']
+          detection_method: 'context-source scoring covers exploitation path (indirect injection); weakness itself is an architecture control'
+          owning_section: '5.4 (exploitation path only)'
+          status: 'partial-by-design'
+        LLM09:
+          name: 'Misinformation'
+          detectability_class: 'not-detection-shaped'
+          required_telemetry: []
+          detection_method: 'none -- evaluation/grounding process control; recorded as accepted gap'
+          owning_section: 'accepted_gap'
+          status: 'accepted_gap'
+        LLM10:
+          name: 'Unbounded Consumption'
+          detectability_class: 'behavioral'
+          required_telemetry: ['token_accounting']
+          detection_method: 'per-identity consumption baselines + rate anomaly scoring'
+          owning_section: '5.7'
+          status: 'planned'
+  deliverable_2:
+    title: 'Coverage Gap Report'
+    filename: 'coverage_gap_report.py'
+    description: |-
+      Renders the coverage matrix into a per-environment gap report. Takes the
+      matrix and an environment declaration listing which telemetry families
+      the pipeline actually emits, and classifies every risk as REACHABLE,
+      BLOCKED (with the missing families named), or ACCEPTED_GAP. Exits
+      non-zero when anything is BLOCKED, so the report doubles as a CI check
+      and its output doubles as the telemetry onboarding work queue.
+    implementation_notes: |-
+      Single quotes throughout per book convention. Uses PyYAML (the book's
+      standard format library, in the repo's requirements) rather than pure
+      standard library. Reachability is set arithmetic: a risk is REACHABLE
+      only when every required telemetry family is present in the environment
+      declaration -- which is why the matrix must use the exact Section 5.1
+      family identifiers. Accepted gaps pass through explicitly and are
+      counted in the summary; they are never silently dropped, because
+      visibility of the gap is the point.
+    code: |
+      #!/usr/bin/env python3
+      # coverage_gap_report.py
+      # Section 0502 -- OWASP LLM Top 10 as a Detection Framework
+      # 20260716 | Detection Engineering: AI Security Detection (Section 0502 OWASP LLM Top 10 as Detection Framework) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Render the LLM Top 10 coverage matrix into a gap report for one environment.
+
+      Usage:
+          coverage_gap_report.py matrix.yaml environment.yaml
+
+      The environment file declares which telemetry families the pipeline actually
+      emits (the Section 5.1 inventory). A risk is REACHABLE only when every
+      telemetry family it requires is present; otherwise it is BLOCKED regardless
+      of rule inventory. Accepted gaps pass through explicitly -- silence is the
+      failure mode this report exists to prevent.
+      '''
+      from __future__ import annotations
+
+      import sys
+
+      import yaml
+
+
+      def classify(risk: dict, available: set[str]) -> str:
+          if risk['status'] == 'accepted_gap':
+              return 'ACCEPTED_GAP'
+          needed = set(risk['required_telemetry'])
+          missing = needed - available
+          if missing:
+              return 'BLOCKED (missing: ' + ', '.join(sorted(missing)) + ')'
+          return 'REACHABLE (' + risk['status'] + ')'
+
+
+      def main() -> int:
+          if len(sys.argv) != 3:
+              print('usage: coverage_gap_report.py matrix.yaml environment.yaml')
+              return 2
+          with open(sys.argv[1]) as fh:
+              matrix = yaml.safe_load(fh)
+          with open(sys.argv[2]) as fh:
+              env = yaml.safe_load(fh)
+
+          available = set(env.get('available_telemetry', []))
+          pin = matrix['framework_pin']
+          print('framework: ' + pin['framework'] + ' -- ' + pin['edition']
+                + ' (pinned ' + pin['pinned_on'] + ')')
+          print('environment: ' + env.get('name', 'unnamed'))
+          print('-' * 72)
+
+          counts: dict[str, int] = {}
+          for rid, risk in matrix['coverage_matrix'].items():
+              verdict = classify(risk, available)
+              bucket = verdict.split(' ')[0]
+              counts[bucket] = counts.get(bucket, 0) + 1
+              line = rid.ljust(7) + risk['name'].ljust(38) + verdict
+              print(line)
+              if bucket == 'BLOCKED':
+                  print(' ' * 7 + 'owner: ' + str(risk['owning_section'])
+                        + ' -- unblock by onboarding the missing family')
+          print('-' * 72)
+          summary = ', '.join(k.lower() + '=' + str(v) for k, v in sorted(counts.items()))
+          print('summary: ' + summary)
+          print('rule: every risk is covered by a tested detection or recorded as an')
+          print('accepted gap. BLOCKED entries are neither -- they are the work queue.')
+          return 0 if 'BLOCKED' not in counts else 1
+
+
+      if __name__ == '__main__':
+          sys.exit(main())
+  deliverable_3:
+    title: 'Risk Detectability Reference'
+    filename: 'risk_detectability_reference.md'
+    description: |-
+      The per-risk detectability classification with its rationale written
+      out -- the document a reviewer reads when challenging why a row carries
+      the class it does, and the template for classifying entries of future
+      framework editions.
+    implementation_notes: |-
+      Kept as a standalone markdown reference rather than folded into the
+      matrix YAML so the rationale prose can breathe and be reviewed as prose.
+      The classification here and the detectability_class fields in the matrix
+      must agree; the CI check that enforces matrix invariants includes a
+      cross-check against this file's class table.
+    code: |
+      <!--
+      risk_detectability_reference.md
+      Section 0502 -- OWASP LLM Top 10 as a Detection Framework
+      20260716 | Detection Engineering: AI Security Detection (Section 0502 OWASP LLM Top 10 as Detection Framework) by Raghav Dinesh
+      -->
+      # Risk Detectability Reference -- OWASP LLM Top 10 (2025 edition, pinned 2026-07-16)
+
+      The class determines what 'covered' is allowed to mean for a risk. A
+      challenge to any classification below is a pull request against this
+      file; the matrix and this reference must agree.
+
+      | Risk | Class | Rationale |
+      |---|---|---|
+      | LLM01 Prompt Injection | hybrid | Known technique families are cheap deterministic catches; novel phrasings require learned scoring. Neither tier alone meets the false-negative or explainability bar. |
+      | LLM02 Sensitive Information Disclosure | hybrid | Structured identifiers (keys, card numbers) are pattern-detectable; contextual PII requires NER-class methods. Per-data-class method choice, so the row is hybrid. |
+      | LLM03 Supply Chain | rule | Provenance is verifiable deterministically: an artifact either carries a valid chain or it does not; a registry mutation is either sanctioned or not. |
+      | LLM04 Data and Model Poisoning | statistical | Poisoning indicators are distribution-level claims about datasets, judged in batch at stage boundaries -- not per-event logic. |
+      | LLM05 Improper Output Handling | rule | A completion reaching an execution or rendering sink without the sanctioned validation step is a deterministic path property. |
+      | LLM06 Excessive Agency | behavioral | No single tool call is 'excessive'; the property exists only against an action-envelope baseline per identity and application. |
+      | LLM07 System Prompt Leakage | rule | A canary marker in a completion is the cleanest deterministic observable on the list. Extraction-attempt patterns on the prompt side ride the 5.4 tiers. |
+      | LLM08 Vector and Embedding Weaknesses | architectural | The weakness is a design property of the retrieval layer and emits no events. Its exploitation path (indirect injection) is covered by 5.4; the row is partial-by-design. |
+      | LLM09 Misinformation | not-detection-shaped | Factuality is not a property any telemetry family carries. Owned by evaluation and grounding controls. Accepted gap, rationale on record -- do not build the keyword rule. |
+      | LLM10 Unbounded Consumption | behavioral | Abuse is a consumption-pattern property per identity; naive volume thresholds punish sanctioned bulk users, so baselines plus diversity features are required. |
+
+      ## Class definitions (normative)
+
+      - **rule** -- deterministic logic over single events; covered means
+        deployed, tested rules.
+      - **hybrid** -- deterministic tier plus learned tier; covered means both
+        tiers deployed with per-tier precision, recall, and latency on record.
+      - **behavioral** -- deviation from a per-entity baseline; covered means
+        baselines built and refreshed, anomaly scoring deployed, allowlist
+        mechanism present.
+      - **statistical** -- batch judgement at a pipeline stage boundary;
+        covered means integrity gates wired into the pipeline.
+      - **architectural** -- the weakness is design, not events; covered means
+        the exploitation path has a detector and the weakness is referenced to
+        a named architecture control (status: partial-by-design).
+      - **not-detection-shaped** -- no security-event observable exists;
+        covered means an accepted-gap record naming the owning non-detection
+        control, visible in every coverage report.
+  deliverable_4:
+    title: 'Sigma Tag Convention for LLM Top 10 Binding'
+    filename: 'sigma_tag_convention.md'
+    description: |-
+      The tagging convention that binds every Sigma rule in this chapter to
+      the framework risk it covers, carrying the pinned edition so coverage
+      queries are platform queries and framework revisions are mechanical
+      remaps instead of archaeology.
+    implementation_notes: |-
+      Extends the Chapter 4 tag discipline (ATT&CK technique tags) with a
+      second namespace. The edition segment inside the tag is deliberate
+      redundancy: it makes every rule self-describing about which framework
+      text its risk ID refers to, which is what keeps dashboards meaningful
+      across a framework revision. The CI cross-check described in part 5
+      joins matrix rows to rules on these tags.
+    code: |
+      <!--
+      sigma_tag_convention.md
+      Section 0502 -- OWASP LLM Top 10 as a Detection Framework
+      20260716 | Detection Engineering: AI Security Detection (Section 0502 OWASP LLM Top 10 as Detection Framework) by Raghav Dinesh
+      -->
+      # Sigma Tag Convention -- Binding Rules to LLM Top 10 Risks
+
+      ## The tag
+
+      Every Sigma rule covering an LLM Top 10 risk carries a tag of the form:
+
+          owasp_llm.2025.llm01
+
+      Segments: framework namespace (`owasp_llm`), pinned edition (`2025`),
+      risk identifier lowercased (`llm01` .. `llm10`). Rules covering an
+      exploitation path for a partial-by-design risk tag the risk they
+      partially cover (e.g. the 5.4 context-scoring rule tags
+      `owasp_llm.2025.llm08` in addition to `owasp_llm.2025.llm01`).
+
+      ## Rules
+
+      1. One tag per covered risk; a rule may carry several risk tags, plus
+         its ATT&CK technique tags per the Chapter 4 convention. Namespaces
+         never mix.
+      2. The edition segment always matches the matrix `framework_pin` --
+         a rule tagged to an edition the matrix does not pin fails CI.
+      3. Never tag a rule to an accepted-gap risk. If a rule genuinely covers
+         it, the matrix row changes first (PR), then the tag ships.
+      4. On a framework revision: pin the new edition in the matrix, remap
+         identifiers in ONE reviewed change, leave old-edition tags on retired
+         rules (history stays truthful).
+
+      ## Example (rule excerpt)
+
+          title: LLM system prompt canary observed in completion
+          tags:
+              - owasp_llm.2025.llm07
+              - attack.exfiltration
+          # detection logic lives in Section 5.8; this excerpt shows tagging only
+
+      ## The queries this buys
+
+      - 'Every rule covering LLM02' -- a tag-prefix query, answerable by the
+        platform, no tribal knowledge.
+      - 'Every matrix row claiming active with zero tagged rules' -- the CI
+        rot check from part 5.
+      - 'Coverage delta between editions' -- a join across tag edition
+        segments during a framework migration.
+
+common_mistakes:
+  mistake_1:
+    description: |-
+      Consuming the LLM Top 10 as a compliance checklist: a one-time design
+      review that walks the ten risks, records mitigations, and closes.
+    why_it_happens: |-
+      That is the mode most teams already use for the web Top 10, the
+      framework's own text is written as risk narratives rather than detection
+      specifications, and a closed review ticket feels like completion.
+    consequence: |-
+      Zero new detection coverage. The program can attest alignment while
+      remaining unable to see a single exploitation of any of the ten risks --
+      the Section 5.1 blind spot with a certificate stapled to it.
+    correct_approach: |-
+      Operate the framework as a coverage map: restate every risk as a
+      detection hypothesis, bind it to telemetry and an owner in the matrix,
+      and let the gap report grade the program continuously. Attestation is a
+      byproduct of the matrix, never a substitute for it.
+  mistake_2:
+    description: |-
+      Citing the framework from memory or without an edition pin -- rules,
+      dashboards, and documents referring to risk IDs with no record of which
+      edition defines them.
+    why_it_happens: |-
+      Risk IDs look stable and memorable, the framework text is a browser tab
+      away, and pinning feels like bureaucracy while the current edition is
+      the only one anyone has used.
+    consequence: |-
+      The framework has already renumbered entries once across editions. After
+      the next revision, unpinned references become ambiguous: two teams argue
+      about what a risk ID means while reading different documents, dashboards
+      silently misreport, and the migration becomes archaeology.
+    correct_approach: |-
+      Two-sided pin, mechanically enforced: detections bind to stable attack
+      classes; every citation of a risk ID -- matrix, Sigma tags, prose --
+      carries the pinned edition, recorded in the framework_pin block with a
+      recheck cadence. Migration then becomes one reviewed remap.
+  mistake_3:
+    description: |-
+      Forcing every risk into a rule -- most visibly, shipping keyword rules
+      for LLM09 Misinformation so the coverage dashboard shows ten green rows.
+    why_it_happens: |-
+      Green rows are what leadership asks to see, rules are the tool the team
+      knows, and 'we do not detect this by design' feels like an admission of
+      failure rather than a professional judgement.
+    consequence: |-
+      The forced rules fire on hedging language and legitimate uncertainty,
+      flooding the queue with noise that erodes analyst trust in the genuinely
+      load-bearing detections -- while covering nothing, because factuality
+      was never an event property.
+    correct_approach: |-
+      Classify before building. The detectability class determines what
+      covered means; not-detection-shaped risks get an accepted-gap record
+      naming the owning non-detection control. An honest ACCEPTED_GAP row is
+      evidence of a program that understands its detections; ten green rows
+      are evidence of a filled-in spreadsheet.
+  mistake_4:
+    description: |-
+      Building a coverage map with no accepted-gap state -- every row must be
+      either covered or in progress, so undetectable or deprioritised risks
+      simply vanish from the artifact.
+    why_it_happens: |-
+      The status vocabulary was copied from a project tracker, where every
+      item is eventually done; nobody designed a state for 'consciously not
+      doing this', so the schema cannot express it.
+    consequence: |-
+      Silence -- the exact failure mode the coverage map exists to prevent.
+      The gap migrates from the visible artifact into undocumented tribal
+      knowledge, survives team turnover as pure ignorance, and resurfaces
+      during an incident as 'we thought that was covered'.
+    correct_approach: |-
+      Make accepted_gap a first-class status with a mandatory rationale field,
+      enforced by CI, rendered in capitals by the gap report. Review the
+      rationales on the same recheck cadence as the framework pin -- a gap
+      accepted under last year's assumptions is a decision, not a default.
+  mistake_5:
+    description: |-
+      Treating the matrix as a one-time mapping exercise: built during this
+      chapter, admired, and never bound to the lifecycle -- no CI validation,
+      no tag cross-check, no status discipline.
+    why_it_happens: |-
+      The mapping work feels complete when the artifact is written, the
+      Chapter 3 lifecycle instincts are wired to rules rather than to
+      metadata artifacts, and nothing visibly breaks when the matrix drifts.
+    consequence: |-
+      The matrix rots silently: statuses say active for rules that were
+      retired, owners reference sections that were restructured, and within
+      two quarters the artifact is confidently wrong -- worse than absent,
+      because it is still being read.
+    correct_approach: |-
+      Bind it three ways, per part 5: statuses change only via pull request,
+      CI validates the invariants on every change (identifiers resolve,
+      accepted gaps carry rationales, active rows have tagged rules), and the
+      Sigma tag convention makes the rule-to-matrix join checkable. The matrix
+      is a detection-as-code artifact; treat it exactly like a rule.
+
+section_summary:
+  compact: |-
+    The OWASP LLM Top 10 (2025 edition, pinned) becomes a detection framework
+    through a mechanical conversion: each risk restated as a falsifiable
+    detection hypothesis, bound to the exact telemetry families from the
+    Section 5.1 inventory, classified for detectability -- rule, hybrid,
+    behavioral, statistical, architectural, or not-detection-shaped -- and
+    assigned to the chapter section that builds its detector, with risks that
+    are not detection-shaped recorded as explicit accepted gaps rather than
+    forced into noisy rules. The resulting coverage matrix is a living
+    detection-as-code artifact: version-pinned against framework drift,
+    validated by CI, joined to deployed rules through a Sigma tag convention
+    that carries the edition, and rendered per environment by a gap report
+    whose REACHABLE, BLOCKED, and ACCEPTED_GAP verdicts double as the
+    telemetry onboarding work queue. Detections bind to stable attack classes;
+    citations pin the edition; and the machinery transfers unchanged to the
+    next framework -- which Section 5.3 demonstrates immediately with MITRE
+    ATLAS.
+  key_takeaways:
+  - 'A risk framework improves detection only when operated as a coverage map
+    with a denominator -- restated hypotheses, named telemetry, tracked
+    statuses -- never when consumed as a checklist'
+  - 'The ten risks collapse onto the five Section 5.1 telemetry families,
+    confirming the attack surface map and the community enumeration describe
+    the same territory'
+  - 'The detectability class determines what covered is allowed to mean for a
+    row; forcing every risk into a rule mangles the ones that are behavioral,
+    statistical, architectural, or not detection-shaped'
+  - 'An honest accepted-gap record -- rationale written, owning control named,
+    rendered visibly in every report -- is stronger posture than a noisy rule
+    pretending to cover an undetectable risk'
+  - 'Detections bind to stable attack classes while every citation pins the
+    framework edition, so a framework revision is one reviewed remap instead
+    of an archaeology project'
+  - 'The matrix is a detection-as-code artifact: statuses move by pull
+    request, CI enforces its invariants, and the Sigma tag convention makes
+    the claim ''this risk is covered'' a checkable platform query'
+
+preview_section_05_03:
+  title: 'ATLAS ATT&CK for ML: Mapping Adversarial ML Tactics to Detection'
+  summary: |-
+    Section 5.2 built the conversion machinery on the OWASP LLM Top 10;
+    Section 5.3 proves the machinery is framework-agnostic by running it
+    against MITRE ATLAS -- the tactic-and-technique enumeration for
+    adversarial ML. ATLAS techniques get detectability ratings that turn the
+    framework into an engineering backlog, its documented case studies become
+    regression test scenarios for the chapter's detectors, and the ATLAS map
+    joins the LLM Top 10 matrix and the Chapter 1 ATT&CK map in a single
+    unified coverage view -- one platform query that spans the intrusion and
+    AI surfaces alike.
+
+metadata:
+  tags:
+  - 'owasp-llm-top-10'
+  - 'coverage-map'
+  - 'detection-framework'
+  - 'detectability-classes'
+  - 'detection-hypothesis'
+  - 'accepted-gap'
+  - 'version-pinning'
+  - 'framework-volatility'
+  - 'sigma-tagging'
+  - 'coverage-matrix'
+  - 'detection-as-code'
+  - 'ai-security'
+  - 'llm-security'
+  cross_chapter_references:
+  - 'Chapter 1, Section 1.4: ATT&CK as architecture -- the coverage-mapping
+    discipline this section reapplies to the LLM Top 10'
+  - 'Chapter 3: detection-as-code lifecycle -- the matrix inherits pull-
+    request statuses, CI validation, and versioning from it'
+  - 'Chapter 4, Sections 4.5-4.6: Sigma rule anatomy and the ATT&CK tag
+    discipline the risk-tag convention extends'
+  - 'Section 5.1: the attack surface map and telemetry inventory the matrix
+    binds to by exact identifier'
+  forward_references:
+  - 'Section 5.3: the same conversion applied to MITRE ATLAS and the unified
+    coverage view across all three frameworks'
+  - 'Sections 5.4-5.8: the owning sections that build each detector the
+    matrix assigns, flipping rows from planned to active'
+  - 'Section 5.7: inherits the LLM10 allowlist-and-diversity design
+    constraint stated in the restatement example'
+  - 'Section 5.10: consolidates the completed matrix as the chapter''s
+    measurable outcome'
