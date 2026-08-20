@@ -1,0 +1,1213 @@
+# section_05_09_production_gateway_architecture.yaml
+
+---
+document_info:
+  title: 'Production Architecture: AI Security Detection at API Gateway Scale'
+  chapter: 5
+  section: 9
+  section_code: '0509'
+  author: 'Raghav Dinesh'
+  github: 'https://github.com/ruwgxo/detection-engineering-at-scale'
+  license: 'MIT'
+  version: '1.0'
+  created: '2026-07-19'
+  estimated_pages: 5
+  estimated_reading_time: '40-50 minutes'
+
+section_overview:
+  one_line_summary: |-
+    The chapter capstone assembles every detector from 5.4 through 5.8 into one
+    deployable gateway architecture where placement is decided by latency budget
+    and recoverability rather than preference: 94ms of inline detection inside a
+    120ms cap, a fail policy fixed per detector before any incident, tiers that
+    share state through the platform rather than the request path, and a closure
+    report that recomputes the Section 5.2 coverage matrix from the detectors
+    actually shipped.
+  why_this_section_exists: |-
+    Eight sections have produced detectors. None has answered the question a
+    platform team asks first: what does this cost my request path. That question
+    is not an afterthought to detection design -- it decides whether the
+    detection exists at all. An AI security detector that adds unbounded latency
+    to the request path is removed by the platform team before it ever catches
+    an attack, and it is removed for entirely correct reasons, because a
+    detection layer that becomes an availability risk has traded a hypothetical
+    compromise for a certain outage.
+
+    So this section makes placement a first-class engineering decision with a
+    hard constraint behind it. Every detector carries a cost tier and a latency
+    budget; the sum of inline budgets is capped; adding an inline detector means
+    either fitting the headroom or demoting another one. That forced tradeoff is
+    the mechanism. Alongside it sits the fail policy question -- what happens
+    when a detector times out -- answered per detector in advance, because the
+    alternative is answering it at three in the morning during the first
+    gateway incident, when the only available answer is to disable the thing
+    that is timing out.
+
+    The section also closes the chapter honestly. The Section 5.2 matrix was
+    built with every row marked planned. The closure report joins that matrix
+    against the placement matrix and recomputes status from shipped detectors,
+    so the final coverage claim is a computation over artifacts rather than an
+    author remembering what got built.
+  position_in_chapter: |-
+    Ninth section of Chapter 5 and the capstone. It builds no new detection
+    logic except the one component Section 5.8 explicitly deferred here -- the
+    tool-call action-log gate -- and instead assembles what 5.4 through 5.8
+    produced into a deployable architecture. Section 5.10 then consolidates the
+    chapter: the closed coverage map, the consolidated rule pack, the mistakes
+    reference, the assessment, and the bridge to Chapter 6. Scale engineering
+    and response actions are deliberately out of scope, deferred to Chapters 9
+    and 12 respectively.
+
+learning_objectives:
+  knowledge:
+  - 'Name the four gateway integration points -- pre-request, tool-call gate,
+    post-response, and off-path -- and what each can and cannot do'
+  - 'State the four placement questions and apply them in order to any detector'
+  - 'Explain why recoverability, not severity, determines which detectors earn
+    fail-closed'
+  - 'Explain why a capped inline budget is a design mechanism rather than a
+    performance target'
+  - 'Describe why tiers must share state through the platform rather than the
+    request path'
+  - 'Explain how the chapter rule packs and classifiers ship through the
+    Chapter 3 pipeline, and what the two chapter-specific CI gates add'
+  - 'Explain why coverage closure is computed from shipped detectors rather
+    than declared'
+  skills:
+  - 'Build a placement decision matrix binding detector, tier, budget, fail
+    policy, and rationale'
+  - 'Wire detectors into a gateway configuration where placement is
+    configuration rather than code'
+  - 'Set and enforce an inline latency budget that fails at boot when exceeded'
+  - 'Generate a coverage closure report that joins a framework matrix to
+    implemented detectors per risk'
+  - 'Instrument fail-open degradation so silent coverage loss becomes visible'
+  security_mindset:
+  - 'Treat placement as survival: an unbounded detector is a detector that will
+    be removed'
+  - 'Decide fail policy before the incident, because during the incident the
+    only available answer is to disable the detector'
+  - 'Prefer honest partial coverage computed from artifacts over a green
+    dashboard asserted by an author'
+  - 'Assume any detector can fail; require that its failure be visible'
+
+prerequisites:
+- 'Sections 5.4-5.8: every detector this section places; the capstone assembles
+  rather than invents'
+- 'Section 5.1: the gateway as observation point and the event schemas it emits'
+- 'Section 5.2: the coverage matrix the closure report recomputes'
+- 'Chapter 2: the four-layer platform and correlation engine the async tier
+  runs on'
+- 'Chapter 3: the CI/CD pipeline the rule packs and gates ship through'
+- 'Chapter 4: the OCSF normalisation layer every finding flows through'
+
+prose_content:
+  part_1:
+    title: 'The Gateway as Sensor, and Its Four Integration Points'
+    body: |-
+      Section 5.1 established the LLM gateway as the observation point for this
+      surface, on the argument that no other layer sees the prompt channel. The
+      capstone makes that concrete: the gateway is not merely where telemetry is
+      captured, it is where detection executes, and it offers exactly four
+      integration points with materially different properties.
+
+      The pre-request point runs on the assembled context window before the
+      model is called. It is the only point where an injection can be stopped
+      before it acts, which is why the injection tiers live here despite the
+      classifier being the single most expensive inline component in the
+      architecture. The tool-call gate runs on each invocation the model
+      requests, before execution -- a point that did not exist in earlier
+      chapters because ordinary detection has no equivalent of a model choosing
+      to act. The post-response point runs on the completion before delivery,
+      which is the last moment a redaction map is useful and the last moment a
+      beacon can be stopped. And the off-path point is everything else: findings
+      and events flowing into the platform, where near-real-time and async
+      detectors read them without ever sitting in the request path.
+
+      The four points are not interchangeable, and the differences are not about
+      cost. A detector at the pre-request point can prevent; a detector reading
+      async can only detect. A detector at the tool-call gate can stop an
+      irreversible action; the same logic reading events afterward can only
+      record that the action happened. Placement therefore decides not just what
+      a detector costs but what it is capable of, which is why the rest of this
+      section treats it as an architectural decision rather than a tuning
+      parameter.
+  part_2:
+    title: 'The Latency Budget as a Design Mechanism'
+    body: |-
+      The architecture sets a total inline budget of 120ms at p99, measured at
+      the gateway under production concurrency rather than at p50 on a
+      developer laptop. The placed detectors consume 94ms of it, leaving 26ms of
+      headroom. Those numbers matter less than the rule attached to them: the
+      sum of inline budgets must not exceed the cap, and the gateway refuses to
+      start if a configuration violates it.
+
+      Failing at boot rather than degrading at runtime is deliberate. A
+      misconfigured chain that quietly adds forty milliseconds to every request
+      is discovered by the platform team as a latency regression, investigated
+      as a performance incident, and resolved by removing the security
+      component. Failing at boot converts that outcome into a configuration
+      error caught in staging, and it puts the tradeoff where it belongs: adding
+      an inline detector requires either fitting the remaining headroom or
+      demoting an existing one, argued explicitly rather than absorbed silently.
+
+      The budget also explains an allocation that looks lopsided. The injection
+      classifier alone takes 40ms -- more than a third of the consumed budget
+      and more than every output check combined -- because indirect injection
+      must be caught before the model acts on retrieved content, and detecting a
+      successful injection afterward is an incident report rather than a
+      prevention. Meanwhile the jailbreak semantic scorer, which is
+      architecturally similar and roughly as valuable, was demoted to
+      near-real-time at 250ms, because a jailbreak detected shortly after the
+      response still drives suspension and conversation review. Same technique,
+      different placement, and the deciding factor is what the detection can
+      still accomplish once the response has left.
+  part_3:
+    title: 'Fail Policy: Recoverability, Not Severity'
+    body: |-
+      Every inline detector needs an answer to one question before deployment:
+      what happens when it times out or errors. Fail-open allows the request and
+      loses coverage; fail-closed blocks the request and preserves coverage at
+      the cost of availability. The instinct is to map this onto severity --
+      important detectors fail closed, minor ones fail open -- and that instinct
+      produces an architecture that takes the platform down when a classifier
+      has a bad afternoon.
+
+      The correct axis is recoverability. Most detectors in this architecture
+      fail open, including the injection tiers, because another tier or the
+      async correlation still sees the request: coverage degrades rather than
+      disappearing, and the alternative is a security component that can halt
+      the product. Two inline detectors fail closed, and both share the same
+      property. Beacon exfiltration completes the moment the client renders the
+      response -- there is no post-hoc mitigation, the data is already gone.
+      An irreversible tool call completes the moment it executes. In both cases
+      the check is also cheap and high-precision, which is what makes
+      fail-closed affordable rather than merely defensible.
+
+      Off the request path, the calculus inverts entirely. The build-time checks
+      from Section 5.6 fail closed by default, because blocking a build costs a
+      pipeline re-run rather than a user request. That asymmetry is worth
+      stating explicitly to a platform team: the security posture is strict
+      where strictness is cheap and permissive where permissiveness preserves
+      the product, and both choices were made deliberately rather than
+      defaulting to whichever the framework happened to implement.
+
+      The last piece is visibility. Every fail-open event emits a degradation
+      record, because silent degradation is indistinguishable from clean traffic
+      -- and a detector that has been failing open for a week is a coverage
+      outage nobody declared.
+  part_4:
+    title: 'Normalisation and State Sharing'
+    body: |-
+      Two architectural rules keep the assembled system from collapsing back
+      into a collection of point solutions.
+
+      The first is that every finding and event flows through the Chapter 4
+      OCSF normalisation layer into the Chapter 2 platform, on the same path as
+      authentication and network telemetry, and no detector writes to a private
+      console. This is the Section 5.1 argument arriving at its conclusion: a
+      standalone AI security tool with its own dashboard recreates the SIEM
+      lock-in problem of Section 4.1 on the newest surface in the stack, and it
+      makes cross-domain correlation structurally inexpressible. With
+      normalisation, an injection finding followed by anomalous tool calls under
+      one identity is a single platform query. Without it, the same question is
+      an integration project.
+
+      The second rule is that tiers share state through the platform, never
+      through the request path. An inline detector never waits on a correlation
+      lookup; correlation reads the events the inline detectors emitted. The
+      temptation to violate this is real and specific -- the multi-turn
+      escalation state from Section 5.5 would genuinely improve inline scoring,
+      and it is sitting right there in the correlation engine. Reaching for it
+      synchronously puts platform query latency inside the request budget, at
+      which point the tiered architecture has quietly become a slow monolithic
+      one and the boot-time budget check will start failing for reasons nobody
+      can explain. Where inline decisions need historical context, the context
+      is pushed to the gateway as cached state on a refresh cycle, not pulled on
+      demand.
+  part_5:
+    title: 'Shipping It: Detection-as-Code and Two Chapter Gates'
+    body: |-
+      Nothing in this architecture is deployed by hand. The rule packs, pattern
+      libraries, contracts, and scorers all ride the Chapter 3 pipeline -- lint,
+      unit test, integration test, stage, deploy -- and the assembly itself is
+      configuration rather than code, so a placement change is a config pull
+      request reviewed like any other rather than a gateway release.
+
+      Two chapter-specific gates join the standard pipeline, and both were built
+      as deliverables in earlier sections rather than invented here. The decay
+      gate runs the Section 5.5 evaluation harness and fails the build when a
+      jailbreak pattern family falls below its declared recall floor, which is
+      how a library that has quietly stopped matching current variants becomes a
+      red pipeline instead of a false coverage claim. The closure gate runs this
+      section's report and fails when a coverage matrix row has no implementing
+      detector and no recorded accepted gap.
+
+      That second gate is worth dwelling on, because building it caught a real
+      error. The first implementation joined the matrix to detectors by owning
+      section: if a row was owned by Section 5.8 and Section 5.8 shipped
+      detectors, the row counted as covered. That produced a confident ACTIVE
+      status for excessive agency, credited to output-content detectors that
+      have nothing to do with tool invocation -- a false coverage claim generated
+      by the very report meant to prevent them. The fix was to make each
+      detector declare the risks it covers and join on that, mirroring the
+      Section 5.2 Sigma tag convention, and the exposed gap turned out to be
+      genuine: the tool-call action-log gate that Section 5.8 deferred to this
+      capstone had not yet been assembled. The lesson generalises past this
+      report. A coverage join at the wrong granularity manufactures coverage,
+      and it does so most convincingly in exactly the artifact everyone trusts.
+  part_6:
+    title: 'The Closed Coverage Picture and What Is Deferred'
+    body: |-
+      Running the closure report against the Section 5.2 matrix and the
+      placement matrix produces the chapter's honest result: of ten rows, eight
+      are active with named implementing detectors, one is partial by design,
+      one is a recorded accepted gap, and none are open. The correct way to
+      state that is ten of ten accounted for -- not ten of ten covered. LLM09
+      remains an accepted gap because factuality is not a property any telemetry
+      family carries, and LLM08 stays partial because the weakness is
+      architectural while only its exploitation path emits telemetry. Both were
+      recorded as such in Section 5.2 before any detector was built, and the
+      report preserves them rather than quietly upgrading them once the chapter
+      had something to show.
+
+      Two things this architecture deliberately does not do. It states latency
+      budgets but does not size infrastructure to meet them: throughput,
+      horizontal scaling, caching strategy, and cost engineering for this
+      pipeline are Chapter 9, and the enterprise-scale figures belong there
+      rather than in an architecture diagram. And it emits findings without
+      acting on them -- blocking, throttling, revocation, and applying the
+      redaction map are response decisions owned by Chapter 12, which is why the
+      Section 5.7 handoff contract stopped at the alert boundary and why the
+      output pipeline returns a redaction map rather than a redacted string.
+
+      What the chapter has produced is a monitored surface: the LLM attack
+      surface that Section 5.1 showed was invisible to a mature detection
+      program is now instrumented, mapped against two frameworks, detected by
+      layered detectors with measured behaviour, assembled into a request path
+      with an enforced budget, and reporting into the same platform as every
+      other domain. Section 5.10 consolidates that result and hands off to
+      Chapter 6, where the same discipline meets cloud, API, and serverless
+      surfaces.
+
+reference_materials:
+  table_1:
+    title: 'Gateway Integration Points'
+    description: |-
+      The four points detectors attach to, what each is capable of, and which
+      chapter detectors run there.
+    columns:
+    - 'Integration point'
+    - 'Capability'
+    - 'Detectors'
+    rows:
+    - - 'Pre-request (assembled context)'
+      - 'Can prevent -- the model has not acted yet'
+      - 'Injection pattern tier, injection classifier tier, jailbreak pattern
+        library'
+    - - 'Tool-call gate (per invocation)'
+      - 'Can prevent an irreversible action before execution'
+      - 'Agent tool-call action log'
+    - - 'Post-response (before delivery)'
+      - 'Can redact and can stop rendering-triggered harm'
+      - 'Canary scan, beacon exfiltration, PII pattern checks'
+    - - 'Off-path (platform)'
+      - 'Can detect and correlate; cannot affect the request'
+      - 'Semantic scorer, encoded blob, multi-turn escalation, staged
+        exfiltration, extraction scoring, API abuse rules'
+    - - 'Build-time (CI and ingestion)'
+      - 'Can block a build or quarantine a batch'
+      - 'Pipeline integrity checks, RAG ingestion monitor'
+  table_2:
+    title: 'Inline Latency Budget Allocation'
+    description: |-
+      The seven inline detectors, their p99 budgets, and the fail policy each
+      carries. Total 94ms against a 120ms cap.
+    columns:
+    - 'Detector'
+    - 'Point'
+    - 'p99 budget'
+    - 'Fail policy'
+    rows:
+    - - 'Injection classifier tier'
+      - 'Pre-request'
+      - '40ms'
+      - 'fail_open'
+    - - 'Output PII pattern'
+      - 'Post-response'
+      - '25ms'
+      - 'fail_open'
+    - - 'Injection pattern tier'
+      - 'Pre-request'
+      - '8ms'
+      - 'fail_open'
+    - - 'Jailbreak pattern library'
+      - 'Pre-request'
+      - '6ms'
+      - 'fail_open'
+    - - 'Agent tool-call action log'
+      - 'Tool-call gate'
+      - '6ms'
+      - 'fail_closed'
+    - - 'Output beacon exfiltration'
+      - 'Post-response'
+      - '5ms'
+      - 'fail_closed'
+    - - 'Output canary scan'
+      - 'Post-response'
+      - '4ms'
+      - 'fail_open'
+  table_3:
+    title: 'Fail Policy by Recoverability'
+    description: |-
+      Why each policy applies where it does. The deciding axis is whether the
+      harm can be mitigated after the fact, not how severe it is.
+    columns:
+    - 'Policy'
+    - 'Applied to'
+    - 'Deciding property'
+    rows:
+    - - 'fail_open'
+      - 'Injection tiers, jailbreak patterns, canary scan, PII pattern'
+      - 'Another tier or async correlation still sees the request; coverage
+        degrades rather than disappears'
+    - - 'fail_closed (inline)'
+      - 'Beacon exfiltration, tool-call gate'
+      - 'Unrecoverable -- rendering or execution completes the harm; both checks
+        are cheap and high-precision'
+    - - 'fail_closed (build-time)'
+      - 'Pipeline integrity, RAG ingestion'
+      - 'Blocking costs a pipeline re-run, not a user request; strictness is
+        cheap off the request path'
+    - - 'not_applicable'
+      - 'Near-real-time and async detectors'
+      - 'Failure delays detection and cannot affect the request'
+  table_4:
+    title: 'Chapter 5 Coverage Closure'
+    description: |-
+      Output of the closure report joining the Section 5.2 matrix to the
+      placement matrix on per-detector risk coverage. Ten of ten accounted for;
+      eight active.
+    columns:
+    - 'Risk'
+    - 'Status'
+    - 'Implementing detectors'
+    rows:
+    - - 'LLM01 Prompt Injection'
+      - 'ACTIVE'
+      - 'Injection pattern and classifier tiers; jailbreak library, semantic
+        scorer, multi-turn correlation'
+    - - 'LLM02 Sensitive Information Disclosure'
+      - 'ACTIVE'
+      - 'PII pattern, beacon exfiltration, encoded blob, staged exfiltration'
+    - - 'LLM03 Supply Chain / LLM04 Poisoning'
+      - 'ACTIVE'
+      - 'Pipeline integrity checks, RAG ingestion monitor'
+    - - 'LLM05 Improper Output Handling / LLM06 Excessive Agency'
+      - 'ACTIVE'
+      - 'Agent tool-call action log, beacon exfiltration'
+    - - 'LLM07 System Prompt Leakage'
+      - 'ACTIVE'
+      - 'Output canary scan'
+    - - 'LLM08 Vector and Embedding Weaknesses'
+      - 'PARTIAL'
+      - 'Injection tiers cover the exploitation path; the weakness is an
+        architecture control'
+    - - 'LLM09 Misinformation'
+      - 'ACCEPTED_GAP'
+      - 'None -- factuality is not an event property; owned by evaluation and
+        grounding'
+    - - 'LLM10 Unbounded Consumption'
+      - 'ACTIVE'
+      - 'Extraction scoring, API abuse rules'
+
+deliverables:
+  deliverable_1:
+    title: 'Gateway Detection Reference Architecture'
+    filename: 'gateway_detection_architecture.md'
+    description: |-
+      The component and data-flow map: four integration points with every
+      detector placed, the inline budget consumption, the four placement
+      questions in order, the fail policy table, detection-as-code integration
+      with the two chapter gates, and the explicit deferrals to Chapters 9 and
+      12.
+    implementation_notes: |-
+      The diagram is deliberately ASCII rather than an image so it survives in
+      a YAML block scalar, diffs readably in review, and renders on the site
+      without an asset pipeline. The four placement questions are ordered
+      intentionally: capability first (does the signal exist in one request),
+      then budget, then recoverability, then failure -- because asking about
+      cost before asking whether inline placement is even meaningful is how
+      async detectors end up as expensive inline ones.
+    code: |
+      <!--
+      gateway_detection_architecture.md
+      Section 0509 -- Production Architecture: AI Security Detection at API Gateway Scale
+      20260719 | Detection Engineering: AI Security Detection (Section 0509 Production Gateway Architecture) by Raghav Dinesh
+      -->
+      # AI Security Detection Reference Architecture
+
+      The gateway is the sensor. Every detector built in Sections 5.4 through 5.8
+      attaches to one of four integration points, and where a detector attaches is
+      determined by its latency cost and by whether the harm it prevents is
+      recoverable after the fact.
+
+      ## Component map
+
+      ```
+                              +---------------------------+
+         client request  -->  |  LLM GATEWAY (the sensor) |
+                              +---------------------------+
+                                          |
+                    (1) PRE-REQUEST  ..... | ..... assembled context window
+                        injection pattern tier        8ms   fail-open
+                        jailbreak pattern library     6ms   fail-open
+                        injection classifier tier    40ms   fail-open
+                                          |
+                                          v
+                              +---------------------------+
+                              |       MODEL ENDPOINT      |
+                              +---------------------------+
+                                          |
+                    (2) TOOL-CALL GATE ... | ..... each requested invocation
+                        agent toolcall action log     6ms   FAIL-CLOSED
+                                          |
+                                          v
+                    (3) POST-RESPONSE .... | ..... completion, before delivery
+                        output canary scan            4ms   fail-open
+                        output beacon exfil           5ms   FAIL-CLOSED
+                        output PII pattern           25ms   fail-open
+                                          |
+         client response <----------------+
+                                          |
+                                          | (events, never blocking)
+                                          v
+                              +---------------------------+
+                              |  OCSF NORMALISATION (Ch4) |
+                              +---------------------------+
+                                          |
+                                          v
+                              +---------------------------+
+                              |  PLATFORM: ingest ->      |
+                              |  correlate -> alert (Ch2) |
+                              +---------------------------+
+                                   ^                  ^
+                    (4) NEAR-REAL-TIME          ASYNC CORRELATION
+                        jailbreak semantic 250ms      multiturn escalation
+                        output encoded blob 150ms     staged exfiltration
+                                                      extraction scoring
+                                                      api abuse rules
+
+              BUILD-TIME (off the request path entirely, Section 5.6)
+              pipeline integrity checks    FAIL-CLOSED
+              RAG ingestion monitor        FAIL-CLOSED
+      ```
+
+      Inline total: **94ms of a 120ms p99 budget**, leaving 26ms of headroom. The
+      chain refuses to start if configured inline budgets exceed the cap, so a
+      misconfiguration fails at boot rather than silently degrading the request path.
+
+      ## Data flow
+
+      1. The gateway emits `prompt_events`, `completion_events`, `token_accounting`,
+         and `tool_call_events` per the Section 5.1 and 5.7 schemas.
+      2. Inline detectors run within their budgets and emit findings. Findings carry
+         offsets and hashes, never raw values (Section 5.8).
+      3. Every finding and event flows through the Chapter 4 OCSF mapping layer into
+         the Chapter 2 platform -- the same path as authentication and network
+         telemetry. No detector writes to a private console.
+      4. Near-real-time and async detectors read from the platform. They never sit in
+         the request path, and inline detectors never wait on them.
+
+      ## The four placement questions
+
+      For any new detector, in order:
+
+      1. **Does the signal exist within one request?** If not, it is async by
+         construction -- extraction scoring and multi-turn escalation are not
+         expensive inline detectors, they are meaningless ones.
+      2. **Does it fit the remaining inline headroom at p99 under production
+         concurrency?** If not, it runs near-real-time. Headroom is finite; adding
+         inline means demoting something else.
+      3. **Is the harm recoverable after delivery?** If not, it is an inline
+         candidate regardless of preference -- beacon exfiltration and irreversible
+         tool calls complete the moment they reach the client.
+      4. **What happens when it fails?** Answer before deployment, not during the
+         first incident.
+
+      ## Fail policy
+
+      | Policy | Applied to | Rationale |
+      |---|---|---|
+      | `fail_open` | Injection tiers, jailbreak patterns, canary scan, PII pattern | Another tier or async correlation still sees the request. Availability wins because coverage degrades rather than disappearing. |
+      | `fail_closed` | Beacon exfiltration, tool-call gate | Unrecoverable: rendering or execution completes the harm. Cheap and high-precision, which is the only combination justifying it. |
+      | `fail_closed` | Build-time checks | Blocking a build costs a pipeline re-run, not a user request. Fail-closed is the default off the request path. |
+      | `not_applicable` | Near-real-time and async | Failure delays detection; it cannot affect the request. |
+
+      Every fail-open event emits a `detector_degraded` record. Silent degradation is
+      indistinguishable from clean traffic, and a detector failing open for a week is
+      an undeclared coverage outage.
+
+      ## Detection-as-code integration
+
+      The chapter ships rule packs (`sigma_prompt_injection_rules.yml`,
+      `sigma_poisoning_indicators.yml`, `sigma_api_abuse_rules.yml`,
+      `sigma_output_rules.yml`), contracts, pattern libraries, and scorers. All of
+      them ride the Chapter 3 pipeline: lint, unit test against the labelled corpora
+      from 5.4 and 5.5, integration test, stage, deploy. Two chapter-specific gates
+      join the standard pipeline:
+
+      - **Decay gate** (`jailbreak_eval_harness.py`): fails the build when a pattern
+        family falls below its declared recall floor.
+      - **Closure gate** (`chapter5_coverage_closure_report.py`): fails when a
+        coverage matrix row has no implementing detector and no recorded accepted gap.
+
+      ## Explicitly deferred
+
+      - **Throughput, scaling, and cost engineering** -- Chapter 9. This architecture
+        states budgets; it does not size infrastructure to meet them.
+      - **Response actions** -- Chapter 12. Findings are emitted here; blocking,
+        throttling, revocation, and redaction application are policy decisions owned
+        by response orchestration.
+  deliverable_2:
+    title: 'Placement Decision Matrix'
+    filename: 'placement_decision_matrix.yaml'
+    description: |-
+      Every detector from 5.4 through 5.8 plus the tool-call gate assembled
+      here, each bound to a tier, a p99 latency budget, a fail policy, the
+      risks it covers, and a written rationale -- with a budget model that caps
+      the sum of inline budgets.
+    implementation_notes: |-
+      The covers field is the join key for coverage closure and exists because
+      a section-level join over-credits: crediting every risk owned by a section
+      to every detector built in that section produced a false active claim for
+      LLM06 during construction. Rationales are mandatory because an undefended
+      placement decision gets relitigated during the first latency incident,
+      and the reasoning needs to be in the artifact rather than in someone
+      memory. The tool-call gate is the single component this capstone adds,
+      deferred here by Section 5.8.
+    code: |
+      # placement_decision_matrix.yaml
+      # Section 0509 -- Production Architecture: AI Security Detection at API Gateway Scale
+      # 20260719 | Detection Engineering: AI Security Detection (Section 0509 Production Gateway Architecture) by Raghav Dinesh
+      #
+      # Every detector built in 5.4-5.8, placed. Placement is the architecture: a
+      # detector that adds unbounded latency to the request path is removed by the
+      # platform team before it ever catches an attack. Each row records the tier,
+      # the latency budget it must meet to hold that tier, the fail policy decided
+      # BEFORE the incident, and the reason -- because an undefended placement
+      # decision gets relitigated during the first outage.
+      matrix_version: '1.0'
+      budget_model:
+        total_inline_budget_ms: 120
+        rule: >
+          The sum of p99 budgets for inline detectors must not exceed
+          total_inline_budget_ms. This is a hard constraint, not a target: adding an
+          inline detector requires either fitting the remaining headroom or demoting
+          another. That forced tradeoff is the point.
+        measurement: 'p99 at the gateway, measured under production concurrency, not p50 on a laptop'
+      fail_policy_definitions:
+        fail_open: 'On detector timeout or error, allow the request and emit a degradation event. Availability preserved, coverage temporarily lost.'
+        fail_closed: 'On detector timeout or error, block the request. Coverage preserved, availability at risk.'
+        not_applicable: 'Detector is not in the request path; failure delays detection but cannot affect the request.'
+      detectors:
+        injection_pattern_tier:
+          covers: ['LLM01', 'LLM08']
+          source_section: '5.4'
+          artifact: 'sigma_prompt_injection_rules.yml'
+          tier: 'inline'
+          latency_budget_p99_ms: 8
+          fail_policy: 'fail_open'
+          rationale: >
+            Cheap deterministic regex over the context window. Earns inline placement
+            on cost and explainability. Fail-open because the classifier tier and the
+            async correlation both still see the request.
+        injection_classifier_tier:
+          covers: ['LLM01', 'LLM08']
+          source_section: '5.4'
+          artifact: 'injection_classifier_contract.yaml'
+          tier: 'inline'
+          latency_budget_p99_ms: 40
+          fail_policy: 'fail_open'
+          rationale: >
+            The contract already specifies fail_open_to_pattern_layer on timeout.
+            Inline because indirect injection must be caught before the model acts on
+            retrieved content, and post-hoc detection of a successful injection is an
+            incident rather than a prevention.
+        jailbreak_pattern_library:
+          covers: ['LLM01']
+          source_section: '5.5'
+          artifact: 'jailbreak_pattern_library.yaml'
+          tier: 'inline'
+          latency_budget_p99_ms: 6
+          fail_policy: 'fail_open'
+          rationale: 'Structural signal matching; same cost profile as the injection pattern tier.'
+        jailbreak_semantic_scorer:
+          covers: ['LLM01']
+          source_section: '5.5'
+          artifact: 'semantic_distance_scorer.py'
+          tier: 'near_real_time'
+          latency_budget_p99_ms: 250
+          fail_policy: 'not_applicable'
+          rationale: >
+            Embedding inference plus centroid comparison does not fit the inline
+            budget alongside the injection classifier. Demoted deliberately: a
+            jailbreak detected 200ms after the response still drives suspension and
+            conversation review, whereas an injection detected late has already acted.
+        jailbreak_multiturn_correlation:
+          covers: ['LLM01']
+          source_section: '5.5'
+          artifact: 'multiturn_correlation_rule.yaml'
+          tier: 'async'
+          latency_budget_p99_ms: null
+          fail_policy: 'not_applicable'
+          rationale: >
+            Stateful over a 12-turn window. Cannot be inline by construction -- the
+            detected object is a sequence that does not exist yet at request time.
+        output_pii_pattern:
+          covers: ['LLM02']
+          source_section: '5.8'
+          artifact: 'output_monitoring_pipeline.py (inline tier checks)'
+          tier: 'inline'
+          latency_budget_p99_ms: 25
+          fail_policy: 'fail_open'
+          rationale: >
+            Checksum-validated pattern checks for cards and credentials. Inline
+            because the redaction map is only useful before the response is
+            delivered. Matches the PII contract service level.
+        output_beacon_exfil:
+          covers: ['LLM02', 'LLM05']
+          source_section: '5.8'
+          artifact: 'output_monitoring_pipeline.py (exfil.markdown_beacon)'
+          tier: 'inline'
+          latency_budget_p99_ms: 5
+          fail_policy: 'fail_closed'
+          rationale: >
+            THE EXCEPTION. Zero-click exfiltration completes when the client renders
+            the response -- there is no post-hoc mitigation, the data is already
+            gone. Cheap, high-precision, and unrecoverable if missed, which is the
+            only combination that justifies fail-closed.
+        output_encoded_blob:
+          covers: ['LLM02']
+          source_section: '5.8'
+          artifact: 'output_monitoring_pipeline.py (near_real_time tier)'
+          tier: 'near_real_time'
+          latency_budget_p99_ms: 150
+          fail_policy: 'not_applicable'
+          rationale: 'Context-sensitive scanning; medium severity and recoverable after delivery.'
+        output_canary_scan:
+          covers: ['LLM07']
+          source_section: '5.8'
+          artifact: 'system_prompt_canary_kit.py'
+          tier: 'inline'
+          latency_budget_p99_ms: 4
+          fail_policy: 'fail_open'
+          rationale: >
+            Exact substring match against a small registry -- trivially cheap. The
+            template fingerprint half runs near-real-time; only the exact canary
+            check is inline.
+        staged_exfil_correlation:
+          covers: ['LLM02']
+          source_section: '5.8'
+          artifact: 'sigma_output_rules.yml (rule 4)'
+          tier: 'async'
+          latency_budget_p99_ms: null
+          fail_policy: 'not_applicable'
+          rationale: 'Counts findings per conversation over 30m. Sequence detection, not request detection.'
+        extraction_scoring:
+          covers: ['LLM10']
+          source_section: '5.7'
+          artifact: 'extraction_detector.py'
+          tier: 'async'
+          latency_budget_p99_ms: null
+          fail_policy: 'not_applicable'
+          rationale: >
+            Per-identity baselines over windows. Inline placement is not merely
+            expensive but meaningless: the signal does not exist within one request.
+        api_abuse_rules:
+          covers: ['LLM10']
+          source_section: '5.7'
+          artifact: 'sigma_api_abuse_rules.yml'
+          tier: 'async'
+          latency_budget_p99_ms: null
+          fail_policy: 'not_applicable'
+          rationale: 'Aggregate correlation over identity windows, including a 21-day slow-burn rule.'
+        pipeline_integrity_checks:
+          covers: ['LLM03', 'LLM04']
+          source_section: '5.6'
+          artifact: 'artifact_integrity_checker.py'
+          tier: 'build_time'
+          latency_budget_p99_ms: null
+          fail_policy: 'fail_closed'
+          rationale: >
+            Not on the request path at all -- runs in CI before a model ships.
+            Fail-closed is free here: blocking a build costs a pipeline re-run, not a
+            user request. This is where fail-closed belongs by default.
+        rag_ingestion_monitor:
+          covers: ['LLM03', 'LLM04']
+          source_section: '5.6'
+          artifact: 'rag_ingestion_monitor.py'
+          tier: 'build_time'
+          latency_budget_p99_ms: null
+          fail_policy: 'fail_closed'
+          rationale: 'Batch quarantine at the ingestion stage boundary; rejection is cheap before indexing.'
+        agent_toolcall_action_log:
+          covers: ['LLM06', 'LLM05']
+          source_section: '5.9'
+          artifact: 'gateway_reference_config.yaml (tool_call_rules)'
+          tier: 'inline'
+          latency_budget_p99_ms: 6
+          fail_policy: 'fail_closed'
+          rationale: >
+            Deferred here by Section 5.8 and assembled by the capstone. Tool calls
+            are ACTIONS, not text: a hijacked agent invoking a destructive or
+            exfiltrating function cannot be un-invoked after the fact, which puts it
+            in the same unrecoverable class as the beacon check. Cheap allowlist and
+            argument checks against the declared tool contract, so fail-closed costs
+            little and prevents an irreversible action.
+        covers_note: >
+          The covers field is the join key for coverage closure, and it exists
+          because a section-level join over-credits: crediting every LLM row owned by
+          a section to every detector built in that section produced a FALSE active
+          claim for LLM06 during construction. Coverage is per detector, per risk --
+          the same discipline as the Section 5.2 Sigma tag convention.
+  deliverable_3:
+    title: 'Gateway Reference Configuration'
+    filename: 'gateway_reference_config.yaml'
+    description: |-
+      Deployable configuration wiring every placed detector into the gateway
+      filter chain by stage, with budgets and fail policies matching the
+      placement matrix, the tool-call rule definitions, the normalisation path,
+      the state-sharing rule, and degradation emission.
+    implementation_notes: |-
+      Nothing here is a detector -- all of them ship from 5.4 through 5.8 --
+      which is the point: assembly is configuration, so a placement change is a
+      config pull request rather than a gateway release. The boot-time budget
+      check is the enforcement mechanism from part 2: a chain whose configured
+      inline budgets exceed the cap refuses to start, converting a silent
+      latency regression into a staging failure. Validation asserts that every
+      detector in the placement matrix is wired and that budgets agree between
+      the two files.
+    code: |
+      # gateway_reference_config.yaml
+      # Section 0509 -- Production Architecture: AI Security Detection at API Gateway Scale
+      # 20260719 | Detection Engineering: AI Security Detection (Section 0509 Production Gateway Architecture) by Raghav Dinesh
+      #
+      # Deployable configuration wiring every Chapter 5 detector into the gateway.
+      # The placement matrix decides WHERE each detector runs; this file is how that
+      # decision is expressed to the runtime. Nothing here is a detector -- they all
+      # ship from 5.4-5.8 -- which is the point: assembly is configuration, so a
+      # placement change is a config PR rather than a code change.
+      config_version: '1.0'
+      gateway:
+        deployment: 'sidecar or in-process filter chain in front of the model endpoint'
+        emits: ['prompt_events', 'completion_events', 'token_accounting', 'tool_call_events']
+        schema_refs:
+          prompt_and_completion: 'ocsf_genai_event_schema.yaml (Section 5.1)'
+          consumption: 'token_accounting_schema.yaml (Section 5.7)'
+        budget:
+          total_inline_p99_ms: 120
+          enforcement: >
+            The chain refuses to start if the sum of configured inline budgets
+            exceeds total_inline_p99_ms. A misconfiguration that would silently
+            degrade the request path fails at boot instead.
+      stages:
+        pre_request:
+          description: 'Runs on the assembled context window before the model is called'
+          detectors:
+            - name: 'injection_pattern_tier'
+              budget_ms: 8
+              on_failure: 'fail_open'
+              scope: 'all context sources, tagged by source_type'
+            - name: 'jailbreak_pattern_library'
+              budget_ms: 6
+              on_failure: 'fail_open'
+              scope: 'user_turn'
+            - name: 'injection_classifier_tier'
+              budget_ms: 40
+              on_failure: 'fail_open'
+              scope: 'all context sources'
+              notes: 'contract specifies fail_open_to_pattern_layer; the chain honours it'
+        post_response:
+          description: 'Runs on the completion before delivery'
+          detectors:
+            - name: 'output_canary_scan'
+              budget_ms: 4
+              on_failure: 'fail_open'
+            - name: 'output_beacon_exfil'
+              budget_ms: 5
+              on_failure: 'fail_closed'
+              notes: 'the one unrecoverable output case -- rendering completes the exfiltration'
+            - name: 'output_pii_pattern'
+              budget_ms: 25
+              on_failure: 'fail_open'
+              emits: 'redaction_map for the response layer; detection never applies it'
+        tool_call_gate:
+          description: 'Runs on each tool invocation the model requests, before execution'
+          detectors:
+            - name: 'agent_toolcall_action_log'
+              budget_ms: 6
+              on_failure: 'fail_closed'
+          tool_call_rules:
+            allowlist_check: 'function must appear in the application declared tool contract'
+            argument_checks:
+              - 'destination hosts in arguments must match the tool contract allowlist'
+              - 'argument size beyond the contract maximum is a finding'
+              - 'encoded blobs in arguments are a finding (reuses the 5.8 encoded-blob check)'
+            irreversibility_rule: >
+              Tools declared irreversible in the contract (delete, transfer, send)
+              require a passing verdict; there is no post-hoc mitigation for an
+              executed destructive call.
+        near_real_time:
+          description: 'Runs off the request path within seconds; cannot affect the response'
+          detectors:
+            - name: 'jailbreak_semantic_scorer'
+              budget_ms: 250
+            - name: 'output_encoded_blob'
+              budget_ms: 150
+        async_correlation:
+          description: 'Platform correlation engine over normalised events (Chapter 2)'
+          detectors:
+            - name: 'jailbreak_multiturn_correlation'
+            - name: 'staged_exfil_correlation'
+            - name: 'extraction_scoring'
+            - name: 'api_abuse_rules'
+      build_time:
+        description: 'Not on the request path -- CI and ingestion pipeline gates (Section 5.6)'
+        detectors:
+          - name: 'pipeline_integrity_checks'
+            on_failure: 'fail_closed'
+          - name: 'rag_ingestion_monitor'
+            on_failure: 'fail_closed'
+      normalisation:
+        path: 'gateway -> OCSF mapping layer (Chapter 4) -> ingest -> correlate -> alert (Chapter 2)'
+        rule: >
+          Every detector finding is normalised and lands in the same platform as
+          authentication and network telemetry. No detector writes to a private
+          console. This is what makes cross-domain correlation expressible -- an
+          injection finding followed by anomalous tool calls under one identity is a
+          single query, not an integration project.
+      state_sharing:
+        rule: >
+          Tiers share state through the platform, never through the request path. An
+          inline detector never waits on a correlation lookup; correlation reads the
+          events inline detectors emitted. Coupling them would put async latency into
+          the request path, which is how a tiered architecture collapses back into a
+          slow one.
+      degradation:
+        emit_on_failure: 'detector_degraded event with detector name, tier, and reason'
+        rule: >
+          Every fail_open event is recorded. Silent degradation is indistinguishable
+          from clean traffic, and a detector that has been failing open for a week is
+          a coverage outage nobody declared.
+      deferred:
+        throughput_and_cost: 'Chapter 9 -- horizontal scaling, caching, and cost engineering for this pipeline'
+        response_actions: 'Chapter 12 -- what happens after a finding (block, throttle, revoke, redact)'
+  deliverable_4:
+    title: 'Chapter 5 Coverage Closure Report'
+    filename: 'chapter5_coverage_closure_report.py'
+    description: |-
+      Recomputes the Section 5.2 coverage matrix from shipped detectors by
+      joining it to the placement matrix on per-detector risk coverage, reports
+      each row as active, partial, accepted gap, or open, and exits non-zero
+      when any row lacks both an implementing detector and a recorded accepted
+      gap.
+    implementation_notes: |-
+      Single quotes throughout per book convention. The join is per detector,
+      per risk -- never per section -- for the reason recorded in the module
+      docstring and part 5: the section-level version manufactured a false
+      active status for LLM06. The report deliberately prints ten of ten
+      ACCOUNTED FOR rather than covered, and preserves the accepted gap and
+      partial statuses from Section 5.2 rather than upgrading them now that the
+      chapter has detectors to show. Verified in both directions: exit 0 against
+      the full placement matrix, exit 1 when the tool-call gate is removed.
+    code: |
+      #!/usr/bin/env python3
+      # chapter5_coverage_closure_report.py
+      # Section 0509 -- Production Architecture: AI Security Detection at API Gateway Scale
+      # 20260719 | Detection Engineering: AI Security Detection (Section 0509 Production Gateway Architecture) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Regenerate the Section 5.2 coverage matrix with implemented-detection status.
+
+      Section 5.2 built the matrix with every row marked 'planned'. Sections 5.4
+      through 5.8 built the detectors. This report closes the loop by JOINING those
+      two artifacts -- the matrix and the placement decision matrix -- so the
+      coverage claim is COMPUTED from shipped detectors rather than asserted by an
+      author who remembers building them.
+
+      The join key is the owning section recorded in each matrix row. A row claims
+      'active' only when the placement matrix contains at least one detector
+      sourced from that section. Rows with no implementing detector stay planned;
+      accepted gaps stay accepted gaps and are reported in capitals.
+
+      Exit code 1 when any row that should be closed is not, so the report works as
+      a chapter-completion CI gate rather than a document.
+      '''
+      from __future__ import annotations
+
+      import sys
+
+      import yaml
+
+
+      def detectors_by_risk(placement: dict) -> dict:
+          '''Map risk id -> detectors that explicitly declare covering it.
+
+          The join key is the per-detector covers list, NOT the owning section. An
+          earlier version of this report joined on section and produced a FALSE
+          active claim: every detector built in a section was credited to every risk
+          that section owned, so output-content detectors appeared to cover excessive
+          agency. Coverage is per detector, per risk -- the same discipline as the
+          Section 5.2 Sigma tag convention.
+          '''
+          out: dict = {}
+          for name, spec in placement['detectors'].items():
+              if not isinstance(spec, dict) or 'covers' not in spec:
+                  continue
+              for rid in spec['covers']:
+                  out.setdefault(rid, []).append(name)
+          return out
+
+
+      def main() -> int:
+          matrix_path = sys.argv[1] if len(sys.argv) > 1 else 'owasp_llm_top10_coverage_matrix.yaml'
+          placement_path = sys.argv[2] if len(sys.argv) > 2 else 'placement_decision_matrix.yaml'
+          matrix = yaml.safe_load(open(matrix_path))
+          placement = yaml.safe_load(open(placement_path))
+          built = detectors_by_risk(placement)
+          placed = [k for k, v in placement['detectors'].items()
+                    if isinstance(v, dict) and 'covers' in v]
+
+          pin = matrix['framework_pin']
+          print('coverage closure -- ' + pin['framework'] + ' ' + pin['edition'])
+          print('detectors placed: ' + str(len(placed))
+                + ' | risks with at least one detector: ' + str(len(built)))
+          print('=' * 78)
+
+          counts = {'active': 0, 'partial': 0, 'accepted_gap': 0, 'open': 0}
+          unclosed = []
+
+          for rid, row in sorted(matrix['coverage_matrix'].items()):
+              declared = row['status']
+              detectors = sorted(built.get(rid, []))
+
+              if declared == 'accepted_gap':
+                  state = 'ACCEPTED_GAP'
+                  counts['accepted_gap'] += 1
+              elif not detectors:
+                  state = 'OPEN'
+                  counts['open'] += 1
+                  unclosed.append(rid)
+              elif declared == 'partial-by-design':
+                  state = 'PARTIAL'
+                  counts['partial'] += 1
+              else:
+                  state = 'ACTIVE'
+                  counts['active'] += 1
+
+              print(rid + '  ' + row['name'][:36].ljust(38) + state)
+              if detectors:
+                  print('      detectors: ' + ', '.join(detectors))
+              else:
+                  print('      detectors: none -- ' + str(row['detection_method'])[:60])
+
+          print('=' * 78)
+          total = sum(counts.values())
+          print('active=' + str(counts['active'])
+                + '  partial=' + str(counts['partial'])
+                + '  accepted_gap=' + str(counts['accepted_gap'])
+                + '  open=' + str(counts['open'])
+                + '   (of ' + str(total) + ' rows)')
+
+          # The honest closure statement. NOT 'ten of ten covered'.
+          closed = counts['active'] + counts['partial'] + counts['accepted_gap']
+          print('\naccounted for: ' + str(closed) + '/' + str(total)
+                + ' -- every row is either implemented, partial by design, or a')
+          print('recorded accepted gap. Coverage is CLAIMED only where a detector exists;')
+          print('LLM09 remains an accepted gap because factuality is not an event property,')
+          print('and LLM08 stays partial because the weakness is architectural while only')
+          print('its exploitation path emits telemetry.')
+
+          if unclosed:
+              print('\nOPEN ROWS (no implementing detector found): ' + ', '.join(unclosed))
+              print('Chapter 5 does not close. Either build the detector or record an')
+              print('accepted gap with a rationale -- silence is not a third option.')
+              return 1
+          return 0
+
+
+      if __name__ == '__main__':
+          sys.exit(main())
+common_mistakes:
+  mistake_1:
+    description: |-
+      Placing detectors inline by importance -- reasoning that a critical
+      detector belongs in the request path because it matters.
+    why_it_happens: |-
+      Severity is the axis security teams already rank by, inline placement
+      feels like the strong choice, and the latency cost is invisible until
+      production concurrency reveals it.
+    consequence: |-
+      The request path accumulates expensive detectors until the platform team
+      measures a latency regression, investigates it as a performance incident,
+      and removes the security components. The most important detector is
+      deleted first because it was the most expensive.
+    correct_approach: |-
+      Place by capability, budget, and recoverability in that order. Ask whether
+      the signal even exists within one request, then whether it fits the
+      remaining headroom, then whether the harm is recoverable after delivery --
+      and cap the total so adding inline forces an explicit demotion.
+  mistake_2:
+    description: |-
+      Mapping fail policy onto severity: important detectors fail closed, minor
+      ones fail open.
+    why_it_happens: |-
+      It reads as the security-conscious default, and fail-closed sounds like
+      the answer a security review wants to hear.
+    consequence: |-
+      A classifier having a bad afternoon takes the product down. The
+      architecture converts a hypothetical compromise into a certain outage, and
+      the response is an emergency change disabling the detector entirely --
+      which is worse than fail-open would have been.
+    correct_approach: |-
+      Decide on recoverability. Fail open where another tier or async
+      correlation still sees the request; fail closed only where the harm
+      completes on delivery or execution and the check is cheap and precise.
+      Off the request path, fail closed by default because blocking is cheap.
+  mistake_3:
+    description: |-
+      Letting inline detectors query the correlation engine for historical
+      context at request time.
+    why_it_happens: |-
+      The state genuinely improves inline decisions, it already exists in the
+      platform, and a single lookup looks inexpensive in isolation.
+    consequence: |-
+      Platform query latency lands inside the request budget. The tiered
+      architecture becomes a slow monolithic one, the boot-time budget check
+      starts failing for reasons nobody can trace to a config change, and p99
+      degrades under exactly the load where it matters.
+    correct_approach: |-
+      Share state through the platform in one direction only: correlation reads
+      what inline detectors emitted, never the reverse. Where inline decisions
+      need history, push it to the gateway as cached state on a refresh cycle
+      rather than pulling on demand.
+  mistake_4:
+    description: |-
+      Computing coverage closure by joining a framework matrix to detectors at
+      section granularity.
+    why_it_happens: |-
+      The matrix already records an owning section per row, so the join is free,
+      and it produces a satisfying all-green result that looks like diligence.
+    consequence: |-
+      Manufactured coverage. Every detector built in a section is credited to
+      every risk that section owns, so unrelated detectors close rows they have
+      nothing to do with -- this section produced a confident ACTIVE for
+      excessive agency credited to output-content detectors, in the very report
+      meant to prevent false claims.
+    correct_approach: |-
+      Have each detector declare the risks it covers and join on that, mirroring
+      the Section 5.2 Sigma tag convention. Coverage is per detector, per risk,
+      and a join at the wrong granularity is most convincing in the artifact
+      everyone trusts.
+  mistake_5:
+    description: |-
+      Failing open without emitting a degradation event.
+    why_it_happens: |-
+      Fail-open is the safe default and the request succeeded, so nothing looks
+      broken. The detector timeout is a debug-level line in a gateway log
+      nobody reads.
+    consequence: |-
+      Silent coverage loss. A detector failing open for a week is
+      indistinguishable from a week of clean traffic, and the coverage matrix
+      keeps reporting the row as active while nothing has been inspected.
+    correct_approach: |-
+      Emit a detector_degraded event on every fail-open, alert on sustained
+      degradation, and treat a detector that has been failing open as a declared
+      coverage outage with an owner -- not as a successful request.
+
+section_summary:
+  compact: |-
+    The capstone assembles every Chapter 5 detector into one gateway
+    architecture with four integration points that differ in capability, not
+    just cost: pre-request can prevent injection, the tool-call gate can stop an
+    irreversible action, post-response can redact and stop rendering-triggered
+    harm, and off-path can only detect. Placement follows four ordered questions
+    -- does the signal exist within one request, does it fit the remaining
+    headroom, is the harm recoverable, and what happens on failure -- enforced
+    by a 120ms inline cap that the gateway refuses to start without satisfying,
+    currently consuming 94ms across seven detectors. Fail policy is decided by
+    recoverability rather than severity, so most detectors fail open while
+    beacon exfiltration and the tool-call gate fail closed because the harm
+    completes on delivery or execution, and build-time checks fail closed
+    because blocking a build is cheap. Every finding normalises through the
+    Chapter 4 OCSF layer into the Chapter 2 platform, tiers share state in one
+    direction only, and assembly is configuration so placement changes are
+    config pull requests. The closure report recomputes the Section 5.2 matrix
+    from shipped detectors and reports ten of ten accounted for -- eight active,
+    one partial by design, one accepted gap -- a join that had to be corrected
+    from section granularity to per-risk granularity after it manufactured a
+    false active status for excessive agency.
+  key_takeaways:
+  - 'Placement is survival: a detector that adds unbounded latency to the
+    request path is removed by the platform team before it ever catches an
+    attack, and removed for correct reasons'
+  - 'The four integration points differ in capability, not just cost -- only
+    pre-request prevents injection, only the tool-call gate stops an
+    irreversible action, and off-path can never do either'
+  - 'A capped inline budget enforced at boot is a design mechanism, not a
+    performance target: it forces an explicit demotion every time something new
+    goes inline'
+  - 'Fail policy follows recoverability, not severity -- fail closed only where
+    harm completes on delivery or execution and the check is cheap and precise;
+    off the request path, fail closed by default'
+  - 'Tiers share state through the platform in one direction only; an inline
+    detector that queries correlation has quietly rebuilt a monolith'
+  - 'Compute coverage closure from shipped detectors at per-risk granularity --
+    a section-level join manufactures coverage, and it does so most
+    convincingly in the report meant to prevent false claims'
+
+preview_section_05_10:
+  title: 'Chapter 5 Summary: AI Security Detection and Chapter 6 Preview'
+  summary: |-
+    Every detector is built and placed, and the coverage map is closed. Section
+    5.10 consolidates the chapter: the AI security detection stack with its tier
+    placement, the unified OWASP and ATLAS coverage view as the chapter
+    measurable outcome, the consolidated Sigma rule pack feeding Appendix B.3,
+    the common mistakes reference gathered from all nine sections, and a
+    knowledge assessment against the chapter completion criteria. It then hands
+    off to Chapter 6, where the same discipline -- telemetry first, frameworks
+    as coverage maps, layered detectors, measured placement -- meets the cloud,
+    API, and serverless attack surfaces that traditional detection tooling has
+    not caught up to either.
+
+metadata:
+  tags:
+  - 'production-architecture'
+  - 'gateway-detection'
+  - 'latency-budget'
+  - 'placement-decision'
+  - 'fail-open-fail-closed'
+  - 'tiered-detection'
+  - 'ocsf-normalisation'
+  - 'detection-as-code'
+  - 'coverage-closure'
+  - 'tool-call-gate'
+  - 'capstone'
+  - 'ai-security'
+  cross_chapter_references:
+  - 'Chapter 2: the four-layer platform and correlation engine the async tier
+    runs on, and the state-sharing rule'
+  - 'Chapter 3: the CI/CD pipeline the rule packs ship through, plus the decay
+    and closure gates'
+  - 'Chapter 4, Section 4.1: the lock-in argument that forbids a standalone AI
+    security console'
+  - 'Chapter 9: throughput, scaling, and cost engineering for this pipeline,
+    deliberately deferred'
+  - 'Chapter 12: response actions -- blocking, throttling, revocation, and
+    applying the redaction map'
+  - 'Sections 5.4-5.8: every detector this section places'
+  forward_references:
+  - 'Section 5.10: consolidates the closed coverage map, the rule pack, and the
+    chapter assessment'
+  - 'Chapter 6: the same discipline applied to cloud, API, and serverless
+    attack surfaces'
