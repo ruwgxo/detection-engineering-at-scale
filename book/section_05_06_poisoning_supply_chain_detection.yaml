@@ -1,0 +1,1291 @@
+# section_05_06_poisoning_supply_chain_detection.yaml
+
+---
+document_info:
+  title: 'Training Data Poisoning Indicators: Supply Chain Detection'
+  chapter: 5
+  section: 6
+  section_code: '0506'
+  author: 'Raghav Dinesh'
+  github: 'https://github.com/ruwgxo/detection-engineering-at-scale'
+  license: 'MIT'
+  version: '1.0'
+  created: '2026-07-18'
+  estimated_pages: 4
+  estimated_reading_time: '35-45 minutes'
+
+section_overview:
+  one_line_summary: |-
+    Poisoning is a supply-chain problem whose only affordable detection point
+    is the pipeline: provenance telemetry that most programs do not emit,
+    deterministic integrity verification that catches substitution and forgery
+    outright, statistical indicators that catch ingestion campaigns at the
+    stage boundary, and an explicit account of the post-training blindness that
+    none of it removes.
+  why_this_section_exists: |-
+    Sections 5.4 and 5.5 detected attacks arriving at inference time, where the
+    attacker gets one request and the defender gets full telemetry. Poisoning
+    inverts that economics completely. The attacker acts once, upstream, weeks
+    before deployment -- a tampered dataset shard, a swapped adapter, a flood
+    of planted documents into a knowledge base -- and every subsequent
+    inference serves the compromise for free. The defender, meanwhile, has
+    almost no visibility: the ATLAS mapping in Section 5.3 rated both poisoning
+    and supply-chain compromise needs-new-telemetry precisely because the
+    pipeline_provenance family they depend on is the one family most detection
+    programs have never onboarded at all.
+
+    That asymmetry sets this section's argument. There is a narrow window --
+    between an artifact entering the pipeline and the model shipping -- where
+    poisoning is cheap to catch, because artifacts are still discrete,
+    hashable, attributable things. Before that window the attack happens on
+    infrastructure the defender does not operate. After it closes, the
+    poisoning has been compiled into weights, where it is no longer an event at
+    all. The whole section is therefore about instrumenting that window
+    properly, and about being honest that closing it does not make the problem
+    go away -- which is why part 6 is dedicated to what this detection cannot
+    see.
+  position_in_chapter: |-
+    Sixth section of Chapter 5 and the first to leave the traffic path
+    entirely. It builds the pipeline_provenance half of the Section 5.3
+    backlog, filling the LLM03 and LLM04 rows of the Section 5.2 coverage
+    matrix. Section 5.7 stays off the content path too but returns to runtime,
+    covering consumption telemetry and extraction; Section 5.8 returns to
+    content with output-side monitoring; and Section 5.9 assembles the traffic-
+    side tiers under a latency budget -- an assembly this section's detectors
+    sit outside, because pipeline detection runs at build time, not request
+    time.
+
+learning_objectives:
+  knowledge:
+  - 'Explain why poisoning is a supply-chain problem and why its attack
+    economics invert those of inference-time attacks'
+  - 'Name the four artifact classes in the AI supply chain -- datasets,
+    fine-tunes and adapters, embedding indexes, model dependencies -- and what
+    provenance each requires'
+  - 'State what the training and RAG ingestion paths must log for any poisoning
+    detection to be possible'
+  - 'Distinguish the four indicator classes: source anomalies, distribution
+    shift, label anomalies, and artifact integrity failures'
+  - 'Explain why integrity verification is deterministic while ingestion
+    indicators are statistical, and what that means for thresholds and false
+    positives'
+  - 'Explain what a signed manifest proves and, precisely, what it does not'
+  - 'Describe post-training blindness and why detection cannot recover a
+    poisoning signal once training has completed'
+  skills:
+  - 'Specify pipeline provenance telemetry as an OCSF-aligned event schema'
+  - 'Write deterministic Sigma rules over provenance events for integrity and
+    source anomalies'
+  - 'Implement hash and signature verification against a signed manifest,
+    including manifest-forgery resistance'
+  - 'Detect RAG knowledge-base poisoning at ingestion with source,
+    duplication, and distribution indicators'
+  - 'Calibrate a statistical threshold from a corpus own internal variance
+    rather than a hard-coded constant'
+  security_mindset:
+  - 'Instrument the window where the attack is still an event -- upstream of it
+    you have no telemetry, downstream of it you have no signal'
+  - 'Treat integrity verification as proof of provenance, never as proof of
+    intent'
+  - 'Expect statistical indicators to catch campaigns and miss craftsmanship,
+    and say so rather than implying coverage you do not have'
+  - 'Refuse to let an unverifiable artifact into a training job; the cheapest
+    control in this section is the one that simply says no'
+
+prerequisites:
+- 'Section 5.1: the telemetry inventory, in which pipeline_provenance is the
+  family emitted by CI/CD and MLOps tooling rather than the gateway'
+- 'Section 5.2: the LLM03 and LLM04 coverage rows this section fills, and the
+  Sigma tag convention'
+- 'Section 5.3: the poisoning and supply-chain hypotheses rated
+  needs-new-telemetry, and the supply-chain test scenario'
+- 'Chapter 3: CI/CD pipeline design -- the pipeline these detections
+  instrument is the one Chapter 3 built'
+- 'Chapter 10 (forward): variance-aware threshold setting, previewed by the
+  calibration approach in the ingestion monitor'
+- 'Working familiarity with ML pipeline mechanics: datasets, fine-tuning,
+  model registries, and RAG ingestion'
+
+prose_content:
+  part_1:
+    title: 'Poisoning as a Supply-Chain Problem'
+    body: |-
+      The instinct to treat poisoning as a data-quality issue is the first
+      wrong turn. Data quality asks whether records are accurate; poisoning
+      asks whether an adversary chose them. The right frame is the one software
+      security arrived at a decade ago for dependencies: everything that flows
+      into a model is a dependency, each dependency has a provenance chain, and
+      an attacker who compromises any link inherits the trust the whole chain
+      carries.
+
+      Four artifact classes make up that supply chain. Datasets are the obvious
+      one -- training corpora, fine-tuning sets, evaluation sets -- and they
+      arrive from vendors, public repositories, and internal pipelines with
+      wildly different trust properties. Fine-tunes and adapters are artifacts
+      in their own right: a LoRA adapter downloaded from a public hub is
+      executable behaviour modification wearing the costume of a small binary
+      file. Embedding indexes are the class most often forgotten, and they are
+      where retrieval poisoning lands, because the knowledge base is a
+      dependency the model consults at every request. Model dependencies -- the
+      base model itself, plus the libraries and serialisation formats around it
+      -- carry the same risks as any package dependency, with the added
+      property that some model formats execute code on load.
+
+      What unifies them, and what makes detection tractable at all, is that
+      each is a discrete, hashable artifact with an origin, a moment of entry,
+      and an actor who introduced it. That is the entire basis for the rest of
+      this section. It is also why the attack economics are so lopsided: a
+      poisoned artifact costs the attacker one successful upstream action and
+      then pays out on every inference forever, while the defender must
+      instrument a build pipeline that, in most organisations, was never
+      designed to emit security telemetry at all.
+  part_2:
+    title: 'Provenance-First Telemetry'
+    body: |-
+      Nothing in this section is possible without events that do not currently
+      exist in most environments. Section 5.1 named pipeline_provenance as one
+      of the five mandatory families and flagged that it comes from CI/CD and
+      MLOps tooling rather than the gateway; Section 5.3 rated the techniques
+      depending on it needs-new-telemetry for the same reason. So the first
+      deliverable here is the schema, not a rule pack -- because a rule pack
+      over events nobody emits is theatre.
+
+      The schema's organising claim is that every provenance event answers four
+      questions: which artifact, which actor, which stage, and what did
+      verification conclude. Artifact identity carries a stable id, a type, the
+      URI it came from, a content hash, and a size. Actor carries the principal
+      and, importantly, whether the stage was automation-triggered or manually
+      invoked -- a human running a normally automated training stage at an odd
+      hour is an indicator that costs nothing to capture and is invisible
+      without this field. Stage places the event in the pipeline lifecycle.
+      Verification records the expected hash, whether it matched, whether a
+      signature and a build attestation were present and valid, and a verdict
+      of verified, unverified, or failed.
+
+      Four event types instantiate that shape: dataset ingest (adding record
+      counts, source trust tier, and label distribution), fine-tune job
+      (adding the base model reference, every dataset consumed, and a
+      hyperparameter hash), registry mutation (adding the mutation type, the
+      stage transition, and the approval reference whose absence is itself the
+      signal), and RAG ingest (adding document counts, source domain, trust
+      tier, and the embedding model used). Two properties of the schema are
+      deliberate. Retention is longer than operational logs, because provenance
+      is integrity evidence that must outlive the artifacts it describes, and
+      tamper-evident storage is preferred since an attacker who can rewrite the
+      provenance log can launder a poisoned artifact. And the privacy class is
+      metadata only: document text stays in the knowledge base, not in
+      telemetry, which keeps this family out of the restricted-content regime
+      that governs prompts and completions.
+  part_3:
+    title: 'Deterministic Indicators: Integrity and Source'
+    body: |-
+      With provenance events flowing, the first indicator classes are the
+      deterministic ones, and they are the best value in this section because
+      they carry no false positive rate. An artifact either matches its
+      manifest hash or it does not. A promotion to production either carries an
+      approval reference or it does not. A RAG batch either came from an
+      uncurated public source or it did not. These are Sigma rules in the
+      ordinary sense, expressed over the provenance category, tagged to LLM03
+      and LLM04, and shipped in the rule pack deliverable.
+
+      Integrity verification is worth building out properly because the naive
+      version has a hole. Hashing artifacts against a manifest catches
+      substitution -- but only if the manifest itself is trustworthy, since an
+      attacker who swaps the artifact will also update its recorded hash. The
+      checker deliverable therefore verifies the manifest signature first and
+      refuses to trust any hash in an unsigned or untrustworthy manifest. Its
+      demonstration proves both properties: a vendor dataset substituted after
+      signing is caught by hash mismatch, and a manifest forged to match the
+      poisoned bytes is caught because the attacker cannot re-sign it without
+      the trusted key. The shipped implementation uses HMAC so it runs without
+      dependencies; production uses asymmetric signing through Sigstore,
+      minisign, or a KMS-backed key, and the verification logic is unchanged.
+
+      The verdict vocabulary matters more than it looks. Verified means hash
+      and attestation both check out. Failed means something is actively wrong.
+      Unverified is the interesting middle: the bytes match the manifest but
+      nothing attests to how the artifact was built. Most organisations start
+      with everything unverified, and the useful posture is to treat that as a
+      tracked exception with an expiry rather than a permanent suppression --
+      which is exactly how the corresponding Sigma rule documents its false
+      positives. The cheapest control in this entire section is the pipeline
+      simply refusing to feed an unverifiable artifact into a training job.
+  part_4:
+    title: 'Statistical Indicators at the Ingestion Boundary'
+    body: |-
+      Integrity proves an artifact is the one the manifest names. It says
+      nothing about whether the content is trustworthy, and for retrieval
+      poisoning that gap is the whole attack: the planted documents are
+      genuinely the documents the pipeline intended to ingest. Catching that
+      requires judging content statistically, in batch, at the ingestion stage
+      boundary -- while rejection is still cheap.
+
+      The monitor deliverable computes three indicator families per batch
+      against a rolling baseline. Source anomalies cover the share of the batch
+      from uncurated public sources and the concentration of the batch in a
+      single domain. Duplication anomalies measure the fraction of documents
+      that are near-identical to another in the batch, which is a direct
+      indicator rather than a hygiene metric: practical retrieval poisoning
+      works by flooding a corpus with variants of one planted claim so that it
+      dominates retrieval for a target query. Distribution shift measures how
+      far the batch's term distribution sits from the corpus it is joining,
+      using Jensen-Shannon divergence because it is bounded and defined when a
+      term appears on only one side -- the normal case for a new batch. In the
+      shipped run, a planted batch of near-duplicate documents from one
+      uncurated domain is quarantined on three independent indicators while an
+      ordinary internal update is accepted.
+
+      Two design corrections during construction are worth carrying into any
+      implementation. First, domain concentration alone is not an indicator: a
+      batch that is entirely internal intranet content is a normal corpus
+      update, and flagging it teaches analysts to ignore the rule, which is how
+      a detector dies. The check is therefore risk-weighted -- concentration
+      only fires when the concentrated source is untrusted. Second, a
+      hard-coded divergence threshold produced false positives on perfectly
+      ordinary updates, because divergence between small text batches is
+      inherently noisy. The monitor instead calibrates: it splits the existing
+      corpus in half, measures the divergence the corpus already shows against
+      itself, and sets the threshold to that value times a margin. A
+      heterogeneous corpus earns a loose threshold and a homogeneous one earns
+      a tight threshold, automatically and per corpus. This is statistical
+      baselining in its simplest form, and Chapter 10 formalises the
+      variance-aware version.
+  part_5:
+    title: 'Label Anomalies and the Training-Set Case'
+    body: |-
+      Retrieval poisoning is the attack most teams will actually face, because
+      knowledge bases are updated continuously by comparatively lightweight
+      pipelines. Classical training-set poisoning is rarer but more severe, and
+      it has one additional indicator class the ingestion monitor does not
+      cover: label anomalies.
+
+      Where a dataset carries labels, the relationship between content and
+      label is itself checkable. Backdoor poisoning works by attaching a
+      trigger pattern to inputs whose labels have been flipped to the
+      attacker's target class, so the statistical signature is a subpopulation
+      whose label distribution diverges sharply from the corpus while sharing
+      an unusual feature. The provenance schema captures the label distribution
+      per ingest event precisely so this is computable at the stage boundary:
+      a shard whose class balance departs materially from every prior shard
+      from the same source is a finding, and the same calibration logic applies
+      -- the threshold comes from the spread across accepted shards, not from a
+      constant.
+
+      The honest caveat is scope. Label-anomaly detection assumes labelled
+      supervised data, which describes classical ML pipelines far better than
+      it describes LLM fine-tuning on instruction data, where the label is the
+      response and 'anomalous' is not statistically well defined. For that
+      case, the durable controls are the ones from part 3: provenance,
+      attestation, and refusing unverifiable artifacts. This is a place where
+      the temptation to claim a detection is strong and the correct move is to
+      record the limit -- the same discipline that produced the accepted-gap
+      row in the Section 5.2 matrix.
+  part_6:
+    title: 'Post-Training Blindness: What This Cannot See'
+    body: |-
+      Every control in this section operates in one window: after an artifact
+      becomes a discrete, attributable thing, and before it is consumed into
+      model weights. Both edges of that window are hard limits, and a detection
+      program that does not state them plainly will imply coverage it does not
+      have.
+
+      The upstream edge is the adversary's own infrastructure. A dataset
+      poisoned at its source -- by whoever curated it, or by whoever
+      compromised that curator -- arrives with a valid hash, a legitimate
+      signature, and a clean attestation, because every one of those artifacts
+      is generated by the compromised party. The integrity checker verifies it
+      cleanly and says so explicitly in its output: integrity proves
+      provenance, not intent. Similarly, a single well-written poisoned
+      document from a trusted source, matching corpus style and duplicated
+      nowhere, trips none of the statistical indicators. Those indicators
+      detect campaigns, not craftsmanship, and the monitor prints that limit
+      rather than burying it.
+
+      The downstream edge is the more absolute one. Once training completes,
+      the poisoning is no longer data -- it is a distributed adjustment to
+      weights, with no event, no artifact, and no telemetry family that
+      contains it. There is no detection rule over a weight tensor. Behavioural
+      probing of a deployed model can reveal that something is wrong, and it is
+      a legitimate control, but it is a different discipline from detection
+      engineering: it requires knowing which behaviour to probe for, which the
+      defender generally does not. This is why the section's economics
+      argument matters so much. The pipeline window is not the best detection
+      point because it is convenient; it is the only affordable one, and the
+      program's response to a poisoning suspicion after deployment is
+      containment and retraining rather than detection. Stating that clearly,
+      in the coverage matrix and to stakeholders, is the difference between a
+      program that knows its limits and one that discovers them during an
+      incident.
+
+reference_materials:
+  table_1:
+    title: 'AI Supply Chain Artifact Classes'
+    description: |-
+      The four dependency classes that flow into a model, how each is
+      compromised, and the provenance that makes each verifiable.
+    columns:
+    - 'Artifact class'
+    - 'Compromise route'
+    - 'Provenance required'
+    rows:
+    - - 'Datasets (training, fine-tune, eval)'
+      - 'Tampered shards, poisoned records, substituted vendor releases'
+      - 'Content hash, signed manifest, source trust tier, label distribution'
+    - - 'Fine-tunes and adapters'
+      - 'Public-hub adapters carrying behaviour modification; swapped weights'
+      - 'Content hash, build attestation, base model reference'
+    - - 'Embedding indexes / knowledge bases'
+      - 'Retrieval poisoning via planted or duplicated documents at ingest'
+      - 'Per-batch source tier, domain, document counts, embedding model ref'
+    - - 'Model dependencies (base model, libraries, formats)'
+      - 'Package compromise; formats that execute code on load'
+      - 'Lockfile hashes, signatures, attestation, registry provenance chain'
+  table_2:
+    title: 'Indicator Classes and Their Properties'
+    description: |-
+      The four indicator classes, whether each is deterministic or statistical,
+      where it runs, and which deliverable implements it.
+    columns:
+    - 'Indicator class'
+    - 'Nature'
+    - 'Runs at'
+    - 'Implemented in'
+    rows:
+    - - 'Artifact integrity failure'
+      - 'Deterministic -- hash and signature either verify or do not'
+      - 'Validate stage, before consumption'
+      - 'artifact_integrity_checker.py; rules 1-2 of the pack'
+    - - 'Source anomaly'
+      - 'Deterministic on trust tier; risk-weighted on concentration'
+      - 'Ingest and register stages'
+      - 'Rules 3-4 of the pack; rag_ingestion_monitor.py'
+    - - 'Distribution shift'
+      - 'Statistical -- calibrated threshold, real false positive rate'
+      - 'Ingestion stage boundary, per batch'
+      - 'rag_ingestion_monitor.py'
+    - - 'Label anomaly'
+      - 'Statistical -- requires labelled supervised data'
+      - 'Dataset ingest stage, per shard'
+      - 'Provenance schema label_distribution; see part 5 caveat'
+  table_3:
+    title: 'What Integrity Verification Proves'
+    description: |-
+      Precisely what each verification result establishes and what it leaves
+      open -- the distinction between provenance and intent.
+    columns:
+    - 'Verification result'
+    - 'Proves'
+    - 'Does not prove'
+    rows:
+    - - 'Hash match against signed manifest'
+      - 'The bytes are the bytes the manifest author intended'
+      - 'That the manifest author was honest or uncompromised'
+    - - 'Valid manifest signature'
+      - 'The manifest was produced by a holder of the trusted key'
+      - 'That the artifact content is benign'
+    - - 'Build attestation present'
+      - 'The artifact was produced by the claimed build process'
+      - 'That the inputs to that build were clean'
+    - - 'Verdict: verified'
+      - 'The provenance chain is intact end to end'
+      - 'Intent -- a source-poisoned artifact verifies cleanly'
+    - - 'Verdict: unverified'
+      - 'Bytes match but nothing attests to how they were built'
+      - 'Nothing about content; track as an exception with an expiry'
+  table_4:
+    title: 'Detection Windows and Their Limits'
+    description: |-
+      Where poisoning detection is possible, where it is not, and what the
+      program does in each region.
+    columns:
+    - 'Phase'
+    - 'Detection possible'
+    - 'Why'
+    - 'Program response'
+    rows:
+    - - 'Upstream of the pipeline (adversary infrastructure)'
+      - 'No'
+      - 'No defender-observable events exist'
+      - 'Source trust tiering and vendor assurance, not detection'
+    - - 'Artifact entry and validation'
+      - 'Yes -- deterministic'
+      - 'Artifacts are discrete, hashable, attributable'
+      - 'Integrity verification; refuse unverifiable artifacts'
+    - - 'Ingestion and stage boundaries'
+      - 'Yes -- statistical'
+      - 'Batches are comparable against a baseline'
+      - 'Quarantine on indicator findings; human adjudication'
+    - - 'Training execution'
+      - 'Partially'
+      - 'Job provenance is observable; content effect is not'
+      - 'Record dataset refs and hyperparameters for later forensics'
+    - - 'After training completes'
+      - 'No'
+      - 'Poisoning is distributed across weights; no event, no artifact'
+      - 'Behavioural probing (different discipline); containment and retrain'
+
+deliverables:
+  deliverable_1:
+    title: 'Pipeline Provenance Event Schema'
+    filename: 'pipeline_provenance_schema.yaml'
+    description: |-
+      The OCSF-aligned specification of the pipeline_provenance telemetry
+      family: common attributes covering artifact, actor, stage, and
+      verification, plus four event types for dataset ingest, fine-tune jobs,
+      registry mutations, and RAG ingestion, with retention and privacy rules.
+    implementation_notes: |-
+      This is the first deliverable rather than the rule pack because a rule
+      pack over events nobody emits is theatre -- and the ATLAS mapping rated
+      these techniques needs-new-telemetry for exactly that reason. OCSF class
+      UIDs are deliberately not pinned; the book pins mechanisms, not class
+      numbers, so verify against the current release. The automation flag on
+      actor is cheap to capture and impossible to reconstruct later. Retention
+      is deliberately longer than operational logs: provenance is integrity
+      evidence, and tamper-evident storage matters because an attacker who
+      rewrites the log launders the artifact.
+    code: |
+      # pipeline_provenance_schema.yaml
+      # Section 0506 -- Training Data Poisoning Indicators: Supply Chain Detection
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0506 Poisoning and Supply Chain Detection) by Raghav Dinesh
+      #
+      # The pipeline_provenance telemetry family from the Section 5.1 inventory,
+      # specified. This is the family the ATLAS mapping rated needs-new-telemetry:
+      # most programs emit NONE of these events today. Poisoning detection is
+      # impossible without them, which is why the schema is the first deliverable
+      # rather than a rule pack.
+      schema_version: '1.0'
+      telemetry_family: 'pipeline_provenance'
+      ocsf_alignment:
+        approach: 'OCSF extension modelled on the Application Activity / Data Lifecycle classes'
+        note: >
+          Verify class UIDs against the current OCSF release before implementation;
+          this book pins mechanisms, not class numbers (market_currency policy). The
+          invariant is structural: every event identifies the ARTIFACT, the ACTOR,
+          the STAGE, and the VERIFICATION RESULT.
+      common_attributes:
+        event_id: 'uuid'
+        timestamp: 'rfc3339'
+        pipeline_id: 'string -- which training or ingestion pipeline emitted this'
+        stage: 'enum: source_fetch | validate | transform | train | evaluate | register | deploy | rag_ingest'
+        actor:
+          principal: 'string -- service account or human identity that triggered the stage'
+          automation: 'bool -- CI-triggered vs manually invoked (manual invocation of a normally automated stage is itself an indicator)'
+        artifact:
+          artifact_id: 'string -- stable identifier'
+          artifact_type: 'enum: dataset | model | adapter | embedding_index | dependency'
+          uri: 'string -- where it came from'
+          content_hash: 'string -- sha256 of the artifact bytes'
+          size_bytes: 'int'
+        verification:
+          hash_expected: 'string -- from the manifest / lockfile'
+          hash_match: 'bool'
+          signature_present: 'bool'
+          signature_valid: 'bool'
+          attestation_present: 'bool -- build provenance attestation (SLSA-style)'
+          verdict: 'enum: verified | unverified | failed'
+      event_types:
+        dataset_ingest:
+          description: 'A dataset or shard enters the pipeline'
+          additional:
+            record_count: 'int'
+            source_trust_tier: 'enum: internal | vendor_contracted | public_curated | public_uncurated'
+            label_distribution: 'map[str, int] -- class counts, for the distribution indicators'
+        finetune_job:
+          description: 'A fine-tuning or training run executes'
+          additional:
+            base_model_ref: 'string -- artifact_id of the base, joins to its own provenance chain'
+            dataset_refs: 'list[str] -- every dataset artifact consumed'
+            hyperparameters_hash: 'string'
+            job_duration_seconds: 'int'
+        registry_mutation:
+          description: 'A model artifact is created, promoted, tagged, or deleted in the registry'
+          additional:
+            mutation: 'enum: create | promote | tag | delete | rollback'
+            from_stage: 'string'
+            to_stage: 'string -- promotion to production is the highest-value mutation to watch'
+            approval_ref: 'string -- change ticket or approval record; absence is an indicator'
+        rag_ingest:
+          description: 'Content enters a retrieval knowledge base'
+          additional:
+            document_count: 'int'
+            source_domain: 'string'
+            source_trust_tier: 'enum: internal | vendor_contracted | public_curated | public_uncurated'
+            embedding_model_ref: 'string'
+      retention:
+        rule: >
+          Provenance events are integrity evidence, not operational logs: retain for
+          the full lifetime of any artifact they describe plus the incident lookback
+          window. Tamper-evident storage preferred -- an attacker who can rewrite the
+          provenance log can launder a poisoned artifact.
+        privacy_class: 'metadata -- no content payloads; document text stays in the RAG store, not the telemetry'
+  deliverable_2:
+    title: 'Poisoning Indicator Sigma Pack'
+    filename: 'sigma_poisoning_indicators.yml'
+    description: |-
+      Four deterministic Sigma rules over the provenance category: integrity
+      verification failure, unverified artifact consumed by a training job,
+      production promotion without an approval reference, and RAG ingestion
+      from an uncurated public source. Tagged to LLM03, LLM04, and LLM08 per
+      the Section 5.2 convention.
+    implementation_notes: |-
+      Multi-document YAML, one rule per document. These rules are deliberately
+      the deterministic half of the section: the statistical indicators are not
+      rules and live in the ingestion monitor. Each rule documents false
+      positives with a fix rather than a suppression -- the unverified-artifact
+      rule points at tracked exceptions with expiries, and the approval rule
+      points at fixing the telemetry rather than disabling the rule, because a
+      suppressed integrity rule is an integrity control that has been removed.
+    code: |
+      # sigma_poisoning_indicators.yml
+      # Section 0506 -- Training Data Poisoning Indicators: Supply Chain Detection
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0506 Poisoning and Supply Chain Detection) by Raghav Dinesh
+      #
+      # Rule pack over the pipeline_provenance family. Multi-document: one rule per
+      # document. These are DETERMINISTIC indicators -- integrity and source
+      # anomalies that are true or false per event. The statistical indicators
+      # (distribution and label shift) are NOT rules; they are batch judgements at
+      # stage boundaries and live in rag_ingestion_monitor.py.
+      title: Artifact integrity verification failed
+      id: 7c3b2a90-0506-4b01-8d01-poison0001
+      status: experimental
+      description: An artifact entered the pipeline whose hash or signature did not verify
+      logsource:
+          product: ml_pipeline
+          category: pipeline_provenance
+      detection:
+          selection:
+              verification.verdict: failed
+          condition: selection
+      fields:
+          - artifact.artifact_id
+          - artifact.uri
+          - stage
+          - actor.principal
+      falsepositives:
+          - Manifest drift after a legitimate vendor re-release without a lockfile update
+      level: high
+      tags:
+          - owasp_llm.2025.llm03
+          - owasp_llm.2025.llm04
+      ---
+      # sigma_poisoning_indicators.yml (rule 2 of 4)
+      # Section 0506 -- 20260718 | Detection Engineering: AI Security Detection (Section 0506 Poisoning and Supply Chain Detection) by Raghav Dinesh
+      title: Unverified artifact consumed by a training job
+      id: 7c3b2a90-0506-4b02-8d02-poison0002
+      status: experimental
+      description: A fine-tuning job consumed an artifact that carries no signature or attestation
+      logsource:
+          product: ml_pipeline
+          category: pipeline_provenance
+      detection:
+          selection_stage:
+              stage: train
+          selection_unverified:
+              verification.verdict: unverified
+          condition: selection_stage and selection_unverified
+      fields:
+          - artifact.artifact_id
+          - artifact.artifact_type
+          - actor.principal
+      falsepositives:
+          - Internal datasets in an environment that has not yet rolled out signing (track as an exception with an expiry, not a permanent suppression)
+      level: medium
+      tags:
+          - owasp_llm.2025.llm03
+          - owasp_llm.2025.llm04
+      ---
+      # sigma_poisoning_indicators.yml (rule 3 of 4)
+      # Section 0506 -- 20260718 | Detection Engineering: AI Security Detection (Section 0506 Poisoning and Supply Chain Detection) by Raghav Dinesh
+      title: Model promoted to production without approval reference
+      id: 7c3b2a90-0506-4b03-8d03-poison0003
+      status: experimental
+      description: A registry promotion to a production stage carries no approval record
+      logsource:
+          product: ml_pipeline
+          category: pipeline_provenance
+      detection:
+          selection_promote:
+              stage: register
+              mutation: promote
+              to_stage|contains: prod
+          filter_approved:
+              approval_ref|exists: true
+          condition: selection_promote and not filter_approved
+      fields:
+          - artifact.artifact_id
+          - from_stage
+          - to_stage
+          - actor.principal
+      falsepositives:
+          - Automated promotion pipelines that record approval outside the registry (fix the telemetry, do not suppress the rule)
+      level: high
+      tags:
+          - owasp_llm.2025.llm03
+      ---
+      # sigma_poisoning_indicators.yml (rule 4 of 4)
+      # Section 0506 -- 20260718 | Detection Engineering: AI Security Detection (Section 0506 Poisoning and Supply Chain Detection) by Raghav Dinesh
+      title: RAG ingestion from an uncurated public source
+      id: 7c3b2a90-0506-4b04-8d04-poison0004
+      status: experimental
+      description: Knowledge-base content ingested from an uncurated public source, the primary RAG poisoning vector
+      logsource:
+          product: ml_pipeline
+          category: pipeline_provenance
+      detection:
+          selection:
+              stage: rag_ingest
+              source_trust_tier: public_uncurated
+          condition: selection
+      fields:
+          - source_domain
+          - document_count
+          - actor.principal
+      falsepositives:
+          - Applications whose design intentionally ingests open web content; scope this rule per pipeline_id rather than disabling it
+      level: medium
+      tags:
+          - owasp_llm.2025.llm04
+          - owasp_llm.2025.llm08
+  deliverable_3:
+    title: 'Artifact Integrity Checker'
+    filename: 'artifact_integrity_checker.py'
+    description: |-
+      Verifies dataset and model artifacts against a signed manifest: manifest
+      signature first, then per-artifact hash and attestation, emitting
+      findings in the provenance event shape. Its demonstration proves both
+      that post-signing byte substitution is caught and that a manifest forged
+      to match the poisoned bytes fails without the trusted key.
+    implementation_notes: |-
+      Single quotes throughout per book convention; the only double-quotes are
+      JSON content inside single-quoted Python string literals, which the
+      convention permits as a runtime-format requirement. HMAC-SHA256 with a
+      shared secret keeps the deliverable dependency-free; production uses
+      asymmetric signing (Sigstore, minisign, or a KMS-backed key) and the
+      verification logic is identical. Findings emit in the deliverable-1 event
+      shape so results land in the platform rather than in a build log nobody
+      reads. The closing output states the honest limit rather than implying
+      the check proves intent.
+    code: |
+      #!/usr/bin/env python3
+      # artifact_integrity_checker.py
+      # Section 0506 -- Training Data Poisoning Indicators: Supply Chain Detection
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0506 Poisoning and Supply Chain Detection) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Verify dataset and model artifacts against a signed manifest.
+
+      This is the cheapest, highest-value poisoning control that exists: an artifact
+      whose bytes do not match the manifest, or whose manifest is not signed by a
+      trusted key, never reaches a training job. It catches substitution and
+      tampering deterministically -- no model, no threshold, no false positive rate.
+
+      It does NOT catch a poisoned artifact that was poisoned at its source and
+      signed by a legitimate but compromised publisher. Integrity verification
+      proves provenance, not intent. That limit is the reason the statistical
+      indicators in rag_ingestion_monitor.py exist beside it, and the reason part 6
+      of this section is about what none of this can see.
+
+      Signing here uses HMAC-SHA256 with a shared secret so the deliverable runs
+      with no dependencies. Production uses asymmetric signing (Sigstore, minisign,
+      or a KMS-backed key) -- the verification LOGIC is identical; only the
+      primitive changes.
+      '''
+      from __future__ import annotations
+
+      import hashlib
+      import hmac
+      import json
+      import sys
+      import tempfile
+      from dataclasses import dataclass
+      from pathlib import Path
+
+      TRUSTED_KEY = b'demo-shared-secret-not-a-production-key'
+
+
+      def sha256_file(path: Path) -> str:
+          h = hashlib.sha256()
+          with open(path, 'rb') as fh:
+              for chunk in iter(lambda: fh.read(65536), b''):
+                  h.update(chunk)
+          return h.hexdigest()
+
+
+      def sign_manifest(manifest: dict, key: bytes) -> str:
+          body = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode('utf-8')
+          return hmac.new(key, body, hashlib.sha256).hexdigest()
+
+
+      def verify_manifest_signature(manifest: dict, signature: str, key: bytes) -> bool:
+          return hmac.compare_digest(sign_manifest(manifest, key), signature)
+
+
+      @dataclass
+      class Finding:
+          artifact_id: str
+          verdict: str          # verified | unverified | failed
+          reason: str
+
+          def as_event(self) -> dict:
+              '''Emit in the pipeline_provenance shape (deliverable 1) so findings
+              land in the platform rather than in a build log nobody reads.'''
+              return {
+                  'stage': 'validate',
+                  'artifact': {'artifact_id': self.artifact_id},
+                  'verification': {'verdict': self.verdict},
+                  'reason': self.reason,
+              }
+
+
+      def verify_artifacts(manifest: dict, signature: str, root: Path,
+                           key: bytes = TRUSTED_KEY) -> list:
+          findings = []
+
+          # Step 1: the manifest itself must be signed by a trusted key. An unsigned
+          # manifest makes every hash in it worthless -- an attacker who swaps the
+          # artifact also swaps its recorded hash.
+          if not verify_manifest_signature(manifest, signature, key):
+              return [Finding('*manifest*', 'failed', 'manifest signature invalid or untrusted key')]
+
+          # Step 2: every artifact's bytes must match its manifest entry.
+          for entry in manifest['artifacts']:
+              aid = entry['artifact_id']
+              path = root / entry['path']
+              if not path.exists():
+                  findings.append(Finding(aid, 'failed', 'artifact missing from disk'))
+                  continue
+              actual = sha256_file(path)
+              if actual != entry['sha256']:
+                  findings.append(Finding(aid, 'failed', 'hash mismatch: artifact bytes differ from manifest'))
+              elif not entry.get('attestation'):
+                  # Hash matches, but nothing attests to how the artifact was built.
+                  findings.append(Finding(aid, 'unverified', 'hash matches but no build attestation'))
+              else:
+                  findings.append(Finding(aid, 'verified', 'hash and attestation verified'))
+          return findings
+
+
+      def _demo() -> int:
+          '''Self-contained demonstration: build a small artifact set, sign it, then
+          tamper with one artifact and prove the checker catches it.'''
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              good = root / 'train_clean.jsonl'
+              good.write_text('{"text": "example record"}\n' * 10, encoding='utf-8')
+              tampered = root / 'train_vendor.jsonl'
+              tampered.write_text('{"text": "vendor record"}\n' * 10, encoding='utf-8')
+              unattested = root / 'adapter.bin'
+              unattested.write_bytes(b'\x00\x01\x02\x03' * 64)
+
+              manifest = {
+                  'manifest_version': '1',
+                  'artifacts': [
+                      {'artifact_id': 'ds-internal-001', 'path': 'train_clean.jsonl',
+                       'sha256': sha256_file(good), 'attestation': True},
+                      {'artifact_id': 'ds-vendor-002', 'path': 'train_vendor.jsonl',
+                       'sha256': sha256_file(tampered), 'attestation': True},
+                      {'artifact_id': 'model-adapter-003', 'path': 'adapter.bin',
+                       'sha256': sha256_file(unattested), 'attestation': False},
+                  ],
+              }
+              signature = sign_manifest(manifest, TRUSTED_KEY)
+
+              print('case 1: clean pipeline run')
+              for f in verify_artifacts(manifest, signature, root):
+                  print('  ' + f.verdict.ljust(11) + f.artifact_id.ljust(20) + f.reason)
+
+              # An attacker substitutes the vendor dataset AFTER the manifest was signed.
+              tampered.write_text('{"text": "poisoned record"}\n' * 10, encoding='utf-8')
+              print('\ncase 2: vendor dataset substituted after signing')
+              findings = verify_artifacts(manifest, signature, root)
+              for f in findings:
+                  print('  ' + f.verdict.ljust(11) + f.artifact_id.ljust(20) + f.reason)
+              failed = [f for f in findings if f.verdict == 'failed']
+              assert len(failed) == 1 and failed[0].artifact_id == 'ds-vendor-002', 'tamper not caught'
+
+              # An attacker also edits the manifest to match the poisoned bytes, but
+              # cannot re-sign it without the trusted key.
+              forged = json.loads(json.dumps(manifest))
+              forged['artifacts'][1]['sha256'] = sha256_file(tampered)
+              print('\ncase 3: manifest forged to match the poisoned artifact')
+              findings = verify_artifacts(forged, signature, root)
+              for f in findings:
+                  print('  ' + f.verdict.ljust(11) + f.artifact_id.ljust(20) + f.reason)
+              assert findings[0].verdict == 'failed' and 'signature' in findings[0].reason, \
+                  'forged manifest not caught'
+
+              print('\nasserted: byte substitution caught; manifest forgery caught without the key')
+              print('emitted event shape: ' + json.dumps(failed[0].as_event(), sort_keys=True))
+              print('\nHONEST LIMIT: a dataset poisoned at source and signed by a legitimate')
+              print('publisher verifies clean here. Integrity proves provenance, not intent.')
+          return 0
+
+
+      if __name__ == '__main__':
+          sys.exit(_demo())
+  deliverable_4:
+    title: 'RAG Ingestion Monitor'
+    filename: 'rag_ingestion_monitor.py'
+    description: |-
+      Batch-level source, duplication, and distribution checks on knowledge-base
+      updates, with the divergence threshold calibrated from the existing
+      corpus own internal spread rather than hard-coded. Accepts an ordinary
+      internal update and quarantines a planted near-duplicate batch from an
+      uncurated domain on three independent indicators.
+    implementation_notes: |-
+      Single quotes throughout per book convention. Two construction
+      corrections are preserved in the code and worth keeping: domain
+      concentration is risk-weighted so an all-internal batch does not fire
+      (flagging normal updates trains analysts to ignore the rule), and the
+      divergence threshold is calibrated by splitting the baseline corpus and
+      measuring its self-divergence, because a constant produces false
+      positives on small batches. The demo also reports honestly when
+      divergence contributes nothing -- on a tiny heterogeneous corpus it
+      cannot -- which is why four independent indicator classes run rather than
+      one.
+    code: |
+      #!/usr/bin/env python3
+      # rag_ingestion_monitor.py
+      # Section 0506 -- Training Data Poisoning Indicators: Supply Chain Detection
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0506 Poisoning and Supply Chain Detection) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Statistical and source checks on knowledge-base updates at ingestion time.
+
+      Integrity verification (artifact_integrity_checker.py) proves an artifact is
+      the one the manifest names. It cannot tell you the CONTENT is trustworthy.
+      This monitor covers the other half: batch judgements at the ingestion stage
+      boundary, where a poisoned corpus is still cheap to reject.
+
+      Three indicator classes, all computed per ingestion batch against a rolling
+      baseline of accepted batches:
+
+        source anomaly       -- trust tier and domain concentration shifts
+        distribution shift   -- the batch does not look like the corpus it joins
+        duplication anomaly  -- near-identical documents repeated to dominate
+                                retrieval for a target query (the practical RAG
+                                poisoning technique)
+
+      These are STATISTICAL, so unlike the Sigma rules they carry a false positive
+      rate and a threshold that must be baselined per corpus. Chapter 10 covers
+      variance-aware threshold setting; the thresholds here are starting points and
+      are labelled as such.
+      '''
+      from __future__ import annotations
+
+      import math
+      import re
+      import sys
+      from collections import Counter
+      from dataclasses import dataclass, field
+
+      TRUST_TIERS = ('internal', 'vendor_contracted', 'public_curated', 'public_uncurated')
+      TIER_RISK = {'internal': 0.0, 'vendor_contracted': 0.2,
+                   'public_curated': 0.5, 'public_uncurated': 1.0}
+
+
+      def tokenize(text: str) -> list:
+          return re.findall(r'[a-z0-9]+', text.lower())
+
+
+      def term_distribution(docs: list) -> Counter:
+          c: Counter = Counter()
+          for d in docs:
+              c.update(set(tokenize(d['text'])))
+          return c
+
+
+      def jensen_shannon(p: Counter, q: Counter) -> float:
+          '''Symmetric distribution distance in [0,1]. Chosen over KL because it is
+          bounded and defined when a term appears in only one distribution -- which
+          is the normal case for a new ingestion batch.'''
+          vocab = set(p) | set(q)
+          ptot = sum(p.values()) or 1
+          qtot = sum(q.values()) or 1
+
+          def kl(a: Counter, atot: int, m: dict) -> float:
+              total = 0.0
+              for t in vocab:
+                  pa = a.get(t, 0) / atot
+                  if pa > 0:
+                      total += pa * math.log2(pa / m[t])
+              return total
+
+          m = {t: 0.5 * (p.get(t, 0) / ptot + q.get(t, 0) / qtot) for t in vocab}
+          return round(0.5 * kl(p, ptot, m) + 0.5 * kl(q, qtot, m), 3)
+
+
+      def near_duplicate_ratio(docs: list) -> float:
+          '''Fraction of documents sharing a high-overlap token set with another doc.
+          Retrieval poisoning works by flooding a corpus with variants of the same
+          planted claim, so duplication is a direct indicator, not a hygiene metric.'''
+          sigs = [frozenset(tokenize(d['text'])) for d in docs]
+          dupes = 0
+          for i, a in enumerate(sigs):
+              for b in sigs[i + 1:]:
+                  if not a or not b:
+                      continue
+                  jac = len(a & b) / len(a | b)
+                  if jac >= 0.8:
+                      dupes += 1
+                      break
+          return round(dupes / len(docs), 3) if docs else 0.0
+
+
+      @dataclass
+      class Thresholds:
+          '''Starting points on the observed scales, NOT universal constants.
+
+          js_divergence is deliberately None by default: divergence between small
+          text batches is inherently noisy, so a hard-coded constant produces
+          false positives on perfectly ordinary updates. Call calibrate() to derive
+          it from how much divergence the EXISTING corpus already shows against
+          itself. That is statistical baselining in its simplest form; Chapter 10
+          formalises the variance-aware version.
+          '''
+          js_divergence: float = None
+          duplicate_ratio: float = 0.30
+          uncurated_share: float = 0.25
+          domain_concentration: float = 0.60
+          concentration_applies_to_untrusted_only: bool = True
+
+          def calibrate(self, baseline_docs: list, margin: float = 1.5) -> 'Thresholds':
+              '''Derive the divergence threshold from the corpus own internal spread.
+
+              Split the baseline in half and measure the divergence between the two
+              halves: that is what NORMAL variation looks like for this corpus. The
+              alerting threshold is that value times a margin. A corpus of varied
+              documents earns a loose threshold; a homogeneous corpus earns a tight
+              one -- automatically, and per corpus.
+              '''
+              mid = len(baseline_docs) // 2
+              if mid < 1:
+                  self.js_divergence = 0.5
+                  return self
+              internal = jensen_shannon(term_distribution(baseline_docs[:mid]),
+                                        term_distribution(baseline_docs[mid:]))
+              self.js_divergence = round(min(0.95, internal * margin), 3)
+              return self
+
+
+      @dataclass
+      class BatchVerdict:
+          batch_id: str
+          findings: list = field(default_factory=list)
+          metrics: dict = field(default_factory=dict)
+
+          @property
+          def verdict(self) -> str:
+              return 'quarantine' if self.findings else 'accept'
+
+
+      def evaluate_batch(batch: dict, baseline_docs: list,
+                         th: Thresholds = None) -> BatchVerdict:
+          if th is None:
+              th = Thresholds().calibrate(baseline_docs)
+          docs = batch['documents']
+          v = BatchVerdict(batch_id=batch['batch_id'])
+
+          # Source anomaly: uncurated share and single-domain concentration.
+          tiers = Counter(d['trust_tier'] for d in docs)
+          uncurated = tiers['public_uncurated'] / len(docs)
+          domains = Counter(d['source_domain'] for d in docs)
+          top_domain, top_count = domains.most_common(1)[0]
+          concentration = top_count / len(docs)
+          risk = sum(TIER_RISK[d['trust_tier']] for d in docs) / len(docs)
+
+          # Distribution shift against the corpus this batch joins.
+          js = jensen_shannon(term_distribution(docs), term_distribution(baseline_docs))
+          dup = near_duplicate_ratio(docs)
+
+          v.metrics = {'uncurated_share': round(uncurated, 3),
+                       'domain_concentration': round(concentration, 3),
+                       'mean_source_risk': round(risk, 3),
+                       'js_divergence': js,
+                       'duplicate_ratio': dup}
+
+          if uncurated > th.uncurated_share:
+              v.findings.append('source: uncurated share ' + str(round(uncurated, 3))
+                                + ' exceeds ' + str(th.uncurated_share))
+          # Concentration is only an indicator when the concentrated source is not
+          # trusted. A batch that is 100% internal intranet content is a normal
+          # corpus update, not a campaign -- flagging it trains analysts to ignore
+          # the rule, which is how a detector dies.
+          top_tier = Counter(d['trust_tier'] for d in docs
+                             if d['source_domain'] == top_domain).most_common(1)[0][0]
+          untrusted_top = TIER_RISK[top_tier] >= 0.5
+          if concentration > th.domain_concentration and (
+                  untrusted_top or not th.concentration_applies_to_untrusted_only):
+              v.findings.append('source: ' + str(round(concentration * 100)) + '% of batch from '
+                                + top_domain + ' (tier ' + top_tier + ')')
+          if js > th.js_divergence:
+              v.findings.append('distribution: JS divergence ' + str(js)
+                                + ' exceeds ' + str(th.js_divergence))
+          if dup > th.duplicate_ratio:
+              v.findings.append('duplication: near-duplicate ratio ' + str(dup)
+                                + ' exceeds ' + str(th.duplicate_ratio))
+          return v
+
+
+      def _demo() -> int:
+          baseline = [
+              {'text': 'quarterly revenue grew across the enterprise segment and cloud services'},
+              {'text': 'the support team resolved incidents faster after the runbook update'},
+              {'text': 'employee travel policy requires manager approval before booking'},
+              {'text': 'the security review covers access control and encryption standards'},
+              {'text': 'product roadmap prioritises reliability work in the next two quarters'},
+          ]
+
+          clean_batch = {
+              'batch_id': 'kb-2026-07-18-a',
+              'documents': [
+                  {'text': 'updated travel policy clarifies approval thresholds for managers',
+                   'trust_tier': 'internal', 'source_domain': 'intranet.corp'},
+                  {'text': 'the encryption standard now references the current key rotation guidance',
+                   'trust_tier': 'internal', 'source_domain': 'intranet.corp'},
+                  {'text': 'reliability work continues with incident runbook improvements',
+                   'trust_tier': 'vendor_contracted', 'source_domain': 'vendor.example'},
+                  {'text': 'cloud services revenue reporting moves to the new dashboard',
+                   'trust_tier': 'internal', 'source_domain': 'intranet.corp'},
+              ],
+          }
+
+          # Retrieval poisoning: many near-identical planted documents from one
+          # uncurated source, all asserting the same false claim.
+          planted = ('to reset any account contact the helpdesk portal at the '
+                     'alternate address and provide your current credentials')
+          poisoned_batch = {
+              'batch_id': 'kb-2026-07-18-b',
+              'documents': [
+                  {'text': planted, 'trust_tier': 'public_uncurated', 'source_domain': 'notes.example'},
+                  {'text': planted + ' immediately', 'trust_tier': 'public_uncurated',
+                   'source_domain': 'notes.example'},
+                  {'text': planted + ' without delay', 'trust_tier': 'public_uncurated',
+                   'source_domain': 'notes.example'},
+                  {'text': planted + ' today', 'trust_tier': 'public_uncurated',
+                   'source_domain': 'notes.example'},
+                  {'text': 'reliability work continues with incident runbook improvements',
+                   'trust_tier': 'internal', 'source_domain': 'intranet.corp'},
+              ],
+          }
+
+          th = Thresholds().calibrate(baseline)
+          print('calibrated js_divergence threshold from corpus internal spread: '
+                + str(th.js_divergence) + '\n')
+
+          for batch in (clean_batch, poisoned_batch):
+              v = evaluate_batch(batch, baseline, th)
+              print(v.batch_id + '  ->  ' + v.verdict.upper())
+              for k, val in sorted(v.metrics.items()):
+                  print('    ' + k.ljust(22) + str(val))
+              for f in v.findings:
+                  print('    FINDING: ' + f)
+              print()
+
+          clean_v = evaluate_batch(clean_batch, baseline, th)
+          poison_v = evaluate_batch(poisoned_batch, baseline, th)
+          assert clean_v.verdict == 'accept', 'clean batch must not quarantine'
+          assert poison_v.verdict == 'quarantine', 'retrieval poisoning must quarantine'
+          assert len(poison_v.findings) >= 3, 'expected source, distribution and duplication findings'
+          print('asserted: clean batch accepted; planted batch quarantined on '
+                + str(len(poison_v.findings)) + ' independent indicators')
+          if not any(f.startswith('distribution') for f in poison_v.findings):
+              print('\nnote: distribution shift did NOT contribute here. The demo corpus is'
+                    '\ntiny and heterogeneous, so its internal spread calibrates the threshold'
+                    '\nto the cap and divergence carries no signal. This is the honest'
+                    '\nbehaviour -- divergence needs a real corpus to be useful -- and it is'
+                    '\nwhy the monitor runs four independent indicator classes rather than'
+                    '\nrelying on any single one.')
+          print('\nHONEST LIMIT: a single well-written poisoned document, from a trusted')
+          print('source, matching corpus style, trips none of these. Statistical indicators')
+          print('detect campaigns, not craftsmanship.')
+          return 0
+
+
+      if __name__ == '__main__':
+          sys.exit(_demo())
+common_mistakes:
+  mistake_1:
+    description: |-
+      Treating poisoning as a data-quality problem: relying on the data team's
+      existing validation, cleaning, and outlier removal as the control.
+    why_it_happens: |-
+      Data quality pipelines already exist, already inspect distributions, and
+      already reject malformed records, so poisoning looks like a subset of a
+      solved problem.
+    consequence: |-
+      Data quality asks whether records are accurate; poisoning asks whether an
+      adversary chose them. A well-formed, plausible, correctly-typed poisoned
+      record passes every quality gate, and the pipeline that would have
+      recorded who introduced it emits no security telemetry at all.
+    correct_approach: |-
+      Frame every input as a dependency with a provenance chain, and instrument
+      that chain: artifact identity, actor, stage, and verification verdict per
+      event. Provenance answers who and where from; quality never does.
+  mistake_2:
+    description: |-
+      Hashing artifacts against a manifest that is not itself signed and
+      trusted.
+    why_it_happens: |-
+      Hashing feels like the security control, manifests look like build
+      metadata rather than a trust anchor, and the signing infrastructure is a
+      separate project with its own rollout.
+    consequence: |-
+      An attacker who substitutes the artifact also updates its recorded hash,
+      and every check passes. The verification produces a green result that
+      means nothing, which is worse than no check because the pipeline now has
+      documented assurance.
+    correct_approach: |-
+      Verify the manifest signature first and refuse to trust any hash inside
+      an unsigned or untrusted manifest -- the property the checker deliverable
+      demonstrates by defeating a forged manifest. Until signing exists, record
+      artifacts as unverified rather than reporting them as checked.
+  mistake_3:
+    description: |-
+      Hard-coding statistical thresholds -- a fixed divergence or duplication
+      cutoff applied to every corpus and every batch.
+    why_it_happens: |-
+      A constant is simple to ship, works on whatever sample it was tuned
+      against, and the noise characteristics of small text batches are not
+      obvious until the false positives arrive.
+    consequence: |-
+      Divergence between small batches is inherently noisy, so a constant
+      quarantines ordinary corpus updates while a looser one misses real
+      campaigns. Both outcomes end with the check disabled, which is the
+      failure this section's construction actually hit.
+    correct_approach: |-
+      Calibrate from the corpus own internal spread: split the baseline,
+      measure the divergence it already shows against itself, and set the
+      threshold to that times a margin -- automatically loose for
+      heterogeneous corpora and tight for homogeneous ones. Chapter 10 covers
+      the variance-aware version.
+  mistake_4:
+    description: |-
+      Flagging source concentration without weighting by trust -- alerting on
+      any batch dominated by a single domain.
+    why_it_happens: |-
+      Concentration genuinely is the signature of a planted campaign, and the
+      unweighted version is one line of code while the weighted version needs
+      trust tiering on every source.
+    consequence: |-
+      Every normal corpus update fires, because ordinary internal batches come
+      overwhelmingly from one internal domain. Analysts learn the rule is noise
+      and route it to a folder, so it is functionally disabled when a real
+      campaign arrives -- the same domain concentration, from a source nobody
+      is now looking at.
+    correct_approach: |-
+      Risk-weight the check so concentration is an indicator only when the
+      concentrated source is untrusted, which requires trust tiering in the
+      provenance schema -- one reason the schema carries source_trust_tier as a
+      first-class field.
+  mistake_5:
+    description: |-
+      Claiming poisoning coverage that extends past training -- reporting the
+      LLM04 row as covered without stating the post-training limit.
+    why_it_happens: |-
+      The pipeline controls are real and well built, the coverage matrix has
+      one row for the risk, and 'covered with limits' is a harder sentence to
+      write than 'covered' -- especially for an audience that wants green.
+    consequence: |-
+      Stakeholders believe a poisoned deployed model would be detected. It
+      would not: after training, the poisoning is distributed across weights
+      with no event, artifact, or telemetry family containing it. The gap
+      surfaces during an incident, which is the worst possible moment to
+      discover a coverage claim was aspirational.
+    correct_approach: |-
+      Record the window explicitly -- detection covers artifact entry through
+      stage boundaries, and stops at training completion -- and state the
+      post-training response as containment and retraining rather than
+      detection. This is the same honesty discipline that produced the
+      accepted-gap row in the Section 5.2 matrix.
+
+section_summary:
+  compact: |-
+    Poisoning inverts inference-time attack economics: the adversary acts once
+    upstream and every later inference serves the compromise, while the
+    defender's only affordable detection window sits between an artifact
+    becoming a discrete, hashable thing and its consumption into weights.
+    Instrumenting that window starts with telemetry nobody emits -- the
+    pipeline_provenance family, specified here as artifact, actor, stage, and
+    verification across dataset ingest, fine-tune, registry mutation, and RAG
+    ingest events. On top of it sit two indicator kinds with different
+    characters: deterministic integrity and source rules, where a signed
+    manifest verified before its hashes defeats both byte substitution and
+    manifest forgery, and statistical ingestion checks, where source tiering,
+    near-duplicate ratios, and a divergence threshold calibrated from the
+    corpus own spread quarantine a planted batch while accepting an ordinary
+    update. Both edges of the window are hard limits and are stated as such:
+    a source-poisoned artifact verifies cleanly because integrity proves
+    provenance rather than intent, a single well-crafted document trips no
+    statistical indicator because those detect campaigns rather than
+    craftsmanship, and after training completes the poisoning is weights
+    rather than events, where the response is containment and retraining, not
+    detection.
+  key_takeaways:
+  - 'Poisoning is a supply-chain problem, not a data-quality problem: every
+    dataset, adapter, index, and dependency is a dependency with a provenance
+    chain an attacker can inherit trust from'
+  - 'The provenance schema comes before the rule pack, because these techniques
+    were rated needs-new-telemetry -- a rule over events nobody emits is
+    theatre'
+  - 'Verify the manifest signature before trusting any hash inside it;
+    otherwise an attacker updates artifact and hash together and every check
+    passes green'
+  - 'Deterministic indicators carry no false positive rate and are the best
+    value in the section; the cheapest control is a pipeline that refuses
+    unverifiable artifacts'
+  - 'Statistical thresholds must be calibrated from the corpus own internal
+    spread, and source concentration must be risk-weighted, or the checks fire
+    on normal updates and get disabled'
+  - 'State the window honestly: integrity proves provenance not intent,
+    statistics catch campaigns not craftsmanship, and after training completes
+    there is no signal left to detect'
+
+preview_section_05_07:
+  title: 'Model Extraction and API Abuse: Rate Anomaly Detection'
+  summary: |-
+    Section 5.6 left the traffic path for the build pipeline; Section 5.7
+    returns to runtime but stays off the content path entirely. Model
+    extraction, quota fraud, and denial-of-wallet are invisible in any single
+    request -- each one is authorised, well-formed, and unremarkable -- and
+    visible only as patterns across many. The section builds consumption
+    baselines per identity, key, and endpoint over token accounting telemetry,
+    scores the volume-diversity-coverage signature that separates
+    distillation-style extraction from legitimate bulk usage without punishing
+    power users, and treats cost telemetry as the earliest and least gameable
+    abuse signal available.
+
+metadata:
+  tags:
+  - 'data-poisoning'
+  - 'supply-chain-security'
+  - 'pipeline-provenance'
+  - 'artifact-integrity'
+  - 'attestation'
+  - 'rag-poisoning'
+  - 'ingestion-time-detection'
+  - 'distribution-shift'
+  - 'threshold-calibration'
+  - 'post-training-blindness'
+  - 'llm03'
+  - 'llm04'
+  - 'ai-security'
+  - 'detection-as-code'
+  cross_chapter_references:
+  - 'Chapter 3: the CI/CD pipeline these detections instrument, and the gate
+    where quarantine and refusal are enforced'
+  - 'Chapter 10: variance-aware statistical baselining, previewed by the
+    calibrated divergence threshold here'
+  - 'Chapter 11: threat intelligence on compromised model and dataset
+    publishers, which feeds source trust tiering'
+  - 'Section 5.1: the pipeline_provenance family this section specifies in
+    full'
+  - 'Section 5.2: the LLM03 and LLM04 coverage rows and the Sigma tag
+    convention'
+  - 'Section 5.3: the poisoning and supply-chain hypotheses rated
+    needs-new-telemetry, and the supply-chain test scenario'
+  forward_references:
+  - 'Section 5.7: returns to runtime telemetry with consumption baselines and
+    extraction detection'
+  - 'Section 5.9: assembles the traffic-side tiers under a latency budget --
+    these pipeline detectors sit outside it, running at build time'
+  - 'Section 5.10: consolidates the coverage matrix, including the honest
+    post-training limit recorded here'
