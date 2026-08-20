@@ -1,0 +1,1112 @@
+# section_05_07_extraction_api_abuse_detection.yaml
+
+---
+document_info:
+  title: 'Model Extraction and API Abuse: Rate Anomaly Detection'
+  chapter: 5
+  section: 7
+  section_code: '0507'
+  author: 'Raghav Dinesh'
+  github: 'https://github.com/ruwgxo/detection-engineering-at-scale'
+  license: 'MIT'
+  version: '1.0'
+  created: '2026-07-18'
+  estimated_pages: 4
+  estimated_reading_time: '35-45 minutes'
+
+section_overview:
+  one_line_summary: |-
+    Model extraction and API abuse are invisible per request and obvious per
+    baseline: no single call is malicious, so the detection lives in each
+    identity own consumption envelope combined with query-diversity, coverage,
+    and parameter-sweep signals over metadata-only telemetry -- and a global
+    volume threshold provably cannot separate an extraction campaign from a
+    sanctioned bulk integrator sending four times more traffic.
+  why_this_section_exists: |-
+    Every detector built so far in this chapter judges content: what the prompt
+    said, what the completion contained, what entered the pipeline. Extraction
+    judges nothing about content at all. A distillation campaign consists
+    entirely of authorised, well-formed, individually reasonable requests from
+    an authenticated identity paying its bills. There is no payload to score,
+    no signature to match, no policy violated. The attack exists only as a
+    shape across many requests.
+
+    That makes this the chapter's clearest demonstration of a principle the
+    book has argued since Chapter 1: some detections are architecture, not
+    rules. A team that approaches extraction with the rule-writing reflex
+    reaches for a rate limit, discovers it fires on the company's largest
+    legitimate customer, raises it until the alerts stop, and now has a
+    threshold above every realistic extraction campaign. The failure is not
+    tuning; it is that the question 'is this too many requests' has no answer
+    that does not reference who is asking. The section builds the alternative
+    -- per-identity baselines plus behavioural signals over a metadata-only
+    telemetry family -- and proves in executable form that it separates cases
+    no threshold can.
+  position_in_chapter: |-
+    Seventh section of Chapter 5, and the last of the runtime detectors before
+    the chapter turns to outputs and assembly. It fills the LLM10 row of the
+    Section 5.2 matrix and the model_extraction and cost_harvesting_denial
+    hypotheses from the Section 5.3 backlog, both rated observable_now. It sits
+    off the content path entirely: Section 5.6 left the traffic path for the
+    build pipeline, this section returns to runtime but reads only consumption
+    metadata, and Section 5.8 returns to content with output-side monitoring.
+    Response actions are deliberately out of scope and deferred to Chapter 12;
+    this section defines the handoff contract only.
+
+learning_objectives:
+  knowledge:
+  - 'Explain extraction economics and why systematic querying is
+    indistinguishable from legitimate traffic one request at a time'
+  - 'Name the consumption signals the gateway must emit -- volume, diversity,
+    coverage, parameter sweep, refusal ratio, cost velocity -- and what each
+    detects'
+  - 'Explain why the token_accounting family is metadata-only by design and how
+    that choice enables the long retention slow-burn detection requires'
+  - 'Explain why a global rate threshold cannot separate extraction from
+    sanctioned bulk usage, in both directions'
+  - 'Describe query-pattern signals: coverage-maximising probes, temperature
+    sweeps, and systematic enumeration'
+  - 'Explain why cost anomalies are a security signal and among the least
+    gameable ones available'
+  - 'State which parts of this problem are Sigma-expressible and which require
+    a stateful scoring layer'
+  skills:
+  - 'Specify consumption telemetry with a prompt fingerprint that supports
+    diversity scoring without retaining prompt content'
+  - 'Build per-identity baselines with a deviation floor that prevents steady
+    identities from flagging on trivial variation'
+  - 'Score a composite extraction signal and run an ablation to attribute its
+    behaviour honestly'
+  - 'Write correlation rules for credential spread, cost velocity, and
+    slow-burn accumulation'
+  - 'Define an alert-to-response handoff contract without building the response'
+  security_mindset:
+  - 'Distrust any threshold whose correct value depends on who is asking --
+    that is a baseline problem wearing a rule costume'
+  - 'Treat an alert that fires on your largest legitimate customer as a broken
+    detector, not an acceptable cost'
+  - 'Assume the patient adversary: the campaign that stays under every
+    short-window limit is the one worth catching'
+  - 'Know why your detector works -- an author wrong about signal attribution
+    cannot tune it'
+
+prerequisites:
+- 'Section 5.1: the token_accounting family and the gateway as the emission
+  point for consumption telemetry'
+- 'Section 5.2: the LLM10 coverage row and the Sigma tag convention'
+- 'Section 5.3: the model_extraction and cost_harvesting hypotheses, and the
+  extraction-campaign test scenario'
+- 'Chapter 2, Section 2.3: the stateful correlation engine, which the
+  slow-burn and baseline detections depend on'
+- 'Chapter 10 (forward): variance-aware baselining, previewed by the deviation
+  floor used here'
+- 'Chapter 12 (forward): response orchestration, which owns everything after
+  the handoff contract'
+
+prose_content:
+  part_1:
+    title: 'Extraction Economics and the One-Request Problem'
+    body: |-
+      Model extraction is the attack of copying a model's capability by
+      querying it. The adversary sends inputs, records outputs, and trains a
+      student model on the resulting pairs -- distillation, performed without
+      permission. Related abuses share its shape: quota fraud, where a
+      credential is resold and consumed by strangers; and denial-of-wallet,
+      where the goal is not capability but cost, running up consumption until
+      the victim throttles their own service or absorbs the bill.
+
+      What unites them, and what makes them hard, is that they are entirely
+      legitimate at the level detection usually operates. Look at any single
+      request from an extraction campaign: an authenticated identity, an
+      authorised endpoint, a well-formed body, a sensible prompt, a normal
+      completion, a paid invoice. Nothing is violated. Compare that to
+      injection, where a payload exists to be scored, or poisoning, where an
+      artifact exists to be verified. Extraction offers the detector nothing to
+      look at, because the malicious property is not in any request -- it is in
+      the relationship between thousands of them.
+
+      The economics also favour patience. An extractor has no deadline. Where
+      injection must succeed within one conversation, a distillation campaign
+      can spread across weeks, staying beneath every per-minute and per-hour
+      rate limit the platform enforces, because those limits exist to protect
+      capacity rather than to catch adversaries. This is why the section's
+      telemetry argument arrives before its detection argument: catching a
+      campaign that runs for a month requires retaining consumption data for
+      longer than a month, which is a schema and privacy decision made long
+      before any detector is written.
+  part_2:
+    title: 'Metadata-Only Telemetry and the Fingerprint Trick'
+    body: |-
+      The token_accounting family is deliberately the narrowest in the Section
+      5.1 inventory: identity, endpoint, consumption counts, request shape,
+      outcome. No prompt text, no completion text, no context. That
+      restriction looks like a limitation and is actually the enabling
+      constraint, for a reason worth stating plainly: content telemetry lives
+      under the restricted-content regime from Section 5.1 -- inline redaction,
+      short retention, partitioned access -- and short retention is fatal to
+      slow-burn detection. Keeping this family metadata-only is what makes a
+      months-long retention window defensible to a privacy reviewer, and that
+      window is the detection.
+
+      One requirement seems to break the rule. Diversity is the strongest
+      extraction signal available, and measuring diversity means knowing
+      whether two requests were similar -- which sounds like it needs the
+      prompts. The schema resolves this with a prompt fingerprint: a
+      locality-sensitive hash, stable under paraphrase, that lets the detection
+      layer compare requests for similarity without ever storing what they
+      said. It is not reversible and it is never used to reconstruct prompts.
+      This is a pattern worth carrying beyond this section: when a signal seems
+      to require content, ask what property of the content it actually needs,
+      and whether that property can be derived at the point of emission and
+      shipped alone.
+
+      From these core attributes the detection layer derives the signals that
+      do the work: volume per identity per window, diversity as the ratio of
+      distinct fingerprints to total requests, coverage as the spread of those
+      fingerprints across the topic space, parameter sweep as the count of
+      distinct sampling-parameter hashes, refusal ratio, and cost velocity
+      against the identity's own history. The schema lists these explicitly as
+      derived rather than emitted, because the gateway's job is to emit facts
+      cheaply and the detection layer's job is to compute meaning over windows.
+  part_3:
+    title: 'Why Global Thresholds Cannot Work'
+    body: |-
+      The natural first detector is a rate limit with an alert attached: flag
+      any identity exceeding some number of requests per window. The detector
+      deliverable implements exactly this and runs it against three identities
+      -- an ordinary interactive user, a sanctioned batch integrator, and a
+      patient extraction campaign -- with a result that settles the question.
+
+      At a cap set low enough to catch the extractor, the sanctioned integrator
+      flags too, and flags on volume four times larger. That alert is worse
+      than useless: an analyst who sees the company's largest legitimate
+      consumer at the top of the queue every morning learns to dismiss the
+      rule, and the real detection leaves with it. Raise the cap above the
+      integrator and the extractor disappears entirely, because the extractor
+      is smaller. There is no value that separates them, and this is not a
+      tuning failure. The two identities are genuinely indistinguishable on the
+      axis being measured; the axis is wrong.
+
+      What separates them is behaviour. The integrator runs one narrow task
+      shape at enormous volume: low diversity, low coverage, a single sampling
+      configuration, no refusals. The extractor runs maximally varied queries
+      spread evenly across the topic space at several sampling configurations,
+      accumulating refusals as it maps the boundaries -- because its objective
+      is not answers but the model's response surface. Systematic enumeration
+      is the signature, and enumeration is visible in the shape of the query
+      set regardless of its size. The lesson generalises past extraction: when
+      a threshold's correct value depends on who is asking, it is a baseline
+      problem wearing a rule costume.
+  part_4:
+    title: 'Per-Identity Baselines and Composite Scoring'
+    body: |-
+      The alternative scores each identity against its own established envelope.
+      The baseline deliverable holds an identity's recent per-window request
+      counts and computes a deviation score for a new window -- how unusual is
+      this, for them. That single change reframes the extractor's window: 220
+      requests is unremarkable globally and far below the integrator, but sits
+      more than eight deviations above the extractor's own history, because the
+      campaign ramped.
+
+      Two implementation details matter more than the arithmetic. The deviation
+      unit carries a floor: a perfectly steady identity has near-zero spread,
+      and dividing by it turns trivial variation into enormous scores, which is
+      the classic way per-identity baselining floods a queue. The floor is
+      expressed as a fraction of the identity's own mean, so it scales. And the
+      composite weights are exposed as a module-level constant rather than
+      buried in the scoring function, because an alert whose score cannot be
+      decomposed cannot be triaged -- the same explainability requirement that
+      made rationale spans mandatory in Section 5.4 and contributing turn
+      indices mandatory in Section 5.5.
+
+      The composite combines relative volume with diversity, coverage,
+      parameter sweep, and refusal ratio. Against the same three identities it
+      produces the separation the threshold could not: the extractor scores
+      0.767 and flags, the sanctioned integrator clears at 0.057 despite
+      sending four times the traffic, and the ordinary user clears. The
+      deliverable asserts all three outcomes rather than printing them, so a
+      future weight change that breaks the separation fails the build.
+  part_5:
+    title: 'Attributing the Signal Honestly'
+    body: |-
+      A detector that works for reasons its authors misunderstand cannot be
+      tuned, and the first draft of this section's closing claim was wrong in
+      exactly that way. It asserted that the separation came from the
+      behavioural signals rather than volume -- a satisfying line that the
+      numbers do not support. The deliverable therefore runs an ablation and
+      reports the split.
+
+      Behavioural signals alone score the extractor at 0.468, just under the
+      threshold. Relative volume alone contributes 0.300, nowhere near it.
+      Neither half suffices; both are load-bearing, and the honest claim is
+      narrower than the appealing one: what fails completely is ABSOLUTE
+      volume, which ranks the sanctioned integrator four times higher than the
+      extractor. Volume is genuinely informative, but only in reference to an
+      identity's own envelope. The ablation is written as assertions so this
+      stays true: if a future weight change lets either half clear the bar
+      alone, the build fails and the prose gets revisited.
+
+      This is a discipline worth generalising to every composite detector in
+      the book. Publishing a score without an attribution is publishing a
+      number nobody can argue with, and detection engineering runs on
+      arguable numbers. Ablation costs a few lines, converts a claim into a
+      measurement, and gives the next engineer -- who will be tuning these
+      weights against real traffic that looks nothing like the demo -- a
+      starting point that tells the truth about which signals were carrying
+      the detection and which were decoration.
+  part_6:
+    title: 'What Belongs in Rules, and Where Detection Stops'
+    body: |-
+      Not all of this problem needs a scoring layer, and the rule pack covers
+      the parts that do not. Credential spread -- one API key serving dozens of
+      distinct principals in an hour -- is a deterministic correlation over
+      identity fields and a strong signal for resold or shared keys. Cost
+      velocity breaks against an identity's trailing profile catch compromised
+      credentials and runaway clients early, and cost is among the least
+      gameable signals available, because an adversary optimising to stay
+      under a cost baseline is an adversary paying less for a slower campaign.
+      Sustained low-rate querying across a multi-week window catches precisely
+      the traffic that is polite by every short-window measure. Refusal-rate
+      spikes catch boundary probing.
+
+      The pack carries a scope note that matters as much as the rules: the
+      extraction verdict itself is deliberately not a Sigma rule. Two rules
+      reference platform-provided baseline lookups and say explicitly that
+      where the platform cannot express per-entity baselines in rule syntax,
+      the logic belongs in the scoring layer and must not be degraded into a
+      fixed cap -- which would reintroduce the global threshold this section
+      spent part 3 dismantling. Naming that temptation inside the artifact is
+      the point; the pressure to flatten a baseline into a constant arrives
+      during implementation, not during design.
+
+      Where detection stops is the other boundary. The handoff contract
+      deliverable specifies what an abuse alert must carry -- the three
+      revocation granularities, the score with its components, the baseline
+      summary, the window, the sanctioned-bulk flag, and a re-runnable evidence
+      query -- and what it must not: no content, and no recommended action.
+      Choosing between throttling, challenging, revoking, and picking up the
+      phone is a policy decision that Chapter 12 owns, and coupling detection
+      to a response system that does not exist yet is how both end up harder to
+      change. Section 5.8 returns to content with output-side monitoring.
+
+reference_materials:
+  table_1:
+    title: 'Abuse Classes on the Consumption Path'
+    description: |-
+      The three abuses this section covers, what the adversary is actually
+      after, and the signal that distinguishes each.
+    columns:
+    - 'Abuse class'
+    - 'Adversary objective'
+    - 'Distinguishing signal'
+    - 'Framework row'
+    rows:
+    - - 'Model extraction / distillation'
+      - 'Reproduce model capability in a student model'
+      - 'High diversity and coverage; parameter sweeps; refusal accumulation'
+      - 'LLM10; ATLAS extract-via-inference-API'
+    - - 'Quota fraud / credential resale'
+      - 'Monetise or freeload on someone else credential'
+      - 'One api_key_id serving many distinct principals'
+      - 'LLM10'
+    - - 'Denial of wallet'
+      - 'Impose cost rather than obtain capability'
+      - 'Cost velocity break with low diversity; expensive parameter choices'
+      - 'LLM10; ATLAS denial-of-ML-service'
+  table_2:
+    title: 'Consumption Signals and What Each Detects'
+    description: |-
+      The derived signals computed over token_accounting windows, what each
+      catches, and how each is evaded -- because a signal without a known
+      evasion has not been thought about.
+    columns:
+    - 'Signal'
+    - 'Detects'
+    - 'Evasion'
+    rows:
+    - - 'Volume relative to own baseline'
+      - 'Ramp-up in an identity established pattern'
+      - 'Start hostile from account creation, so no benign baseline exists'
+    - - 'Diversity (distinct fingerprints / requests)'
+      - 'Systematic querying rather than repeated real work'
+      - 'Inject deliberate repetition; costs the campaign efficiency'
+    - - 'Coverage (spread across topic space)'
+      - 'Enumeration aimed at the response surface'
+      - 'Restrict the campaign to one domain; yields a narrower student model'
+    - - 'Parameter sweep (distinct sampling configs)'
+      - 'Probing model behaviour rather than seeking answers'
+      - 'Fix sampling parameters; loses behavioural fidelity'
+    - - 'Refusal ratio'
+      - 'Boundary mapping'
+      - 'Avoid the boundary; leaves the student model uncalibrated there'
+    - - 'Cost velocity vs own history'
+      - 'Compromised credentials, runaway clients, denial of wallet'
+      - 'Stay under the cost baseline, which means paying less for a slower
+        campaign -- the least gameable signal here'
+  table_3:
+    title: 'Global Threshold versus Per-Identity Baseline'
+    description: |-
+      The measured outcome from the detector deliverable across three
+      identities, showing that no single volume cap separates the extractor
+      from the sanctioned integrator.
+    columns:
+    - 'Identity'
+    - 'Requests in window'
+    - 'Global cap 200'
+    - 'Per-identity score'
+    - 'Correct outcome'
+    rows:
+    - - 'Ordinary interactive user'
+      - '40'
+      - 'clear'
+      - '0.219 clear'
+      - 'clear -- both approaches agree'
+    - - 'Sanctioned batch integrator'
+      - '900'
+      - 'FLAG (false positive)'
+      - '0.057 clear'
+      - 'clear -- only the baseline gets this right'
+    - - 'Extraction campaign'
+      - '220'
+      - 'FLAG'
+      - '0.767 FLAG'
+      - 'flag -- but any cap above 900 would miss it entirely'
+  table_4:
+    title: 'Signal Attribution Ablation'
+    description: |-
+      Measured contribution of each signal group to the extraction verdict, and
+      what the measurement corrects about the intuitive claim.
+    columns:
+    - 'Signal group'
+    - 'Contribution to extractor score'
+    - 'Sufficient alone'
+    - 'Conclusion'
+    rows:
+    - - 'Behavioural (diversity, coverage, sweep, refusals)'
+      - '0.468'
+      - 'No -- falls just under the 0.5 bar'
+      - 'Load-bearing but not self-sufficient'
+    - - 'Relative volume (own-baseline deviation)'
+      - '0.300'
+      - 'No'
+      - 'Load-bearing; volume matters relative to the identity'
+    - - 'Combined'
+      - '0.767'
+      - 'Yes'
+      - 'Both halves required'
+    - - 'Absolute volume (global cap)'
+      - 'Ranks the integrator 4x higher than the extractor'
+      - 'No -- actively misleading'
+      - 'The axis that fails; this is what the section argues against'
+
+deliverables:
+  deliverable_1:
+    title: 'API Abuse Sigma Rule Pack'
+    filename: 'sigma_api_abuse_rules.yml'
+    description: |-
+      Four gateway-log rules over the token_accounting category: credential
+      spread across principals, cost velocity break against identity history,
+      sustained low-rate querying across an extended window, and refusal-ratio
+      spikes indicating boundary probing. Tagged to LLM10 per the Section 5.2
+      convention.
+    implementation_notes: |-
+      Multi-document YAML, one rule per document. The pack carries an explicit
+      scope note: the extraction verdict is NOT a Sigma rule, because it
+      requires per-entity baselines that live in the scoring layer. Two rules
+      reference a platform-provided baseline lookup and state directly that
+      where a platform cannot express per-entity baselines in rule syntax, the
+      logic moves to the scoring layer rather than degrading into a fixed cap
+      -- naming the temptation inside the artifact, since it arrives during
+      implementation rather than design. The slow-burn rule requires retention
+      exceeding its own window, which is the schema decision from deliverable 3.
+    code: |
+      # sigma_api_abuse_rules.yml
+      # Section 0507 -- Model Extraction and API Abuse: Rate Anomaly Detection
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0507 Extraction and API Abuse Detection) by Raghav Dinesh
+      #
+      # Gateway-log rules over the token_accounting family. IMPORTANT SCOPE NOTE:
+      # these rules cover the DETERMINISTIC and CORRELATION-EXPRESSIBLE half of the
+      # problem -- credential-sharing shapes, cost velocity breaks, and slow-burn
+      # aggregates. The extraction verdict itself is NOT a Sigma rule: it needs a
+      # per-identity baseline, which is a stateful scoring problem living in
+      # extraction_detector.py. Rules that pretend otherwise become the global
+      # threshold this section argues against.
+      title: API key used from an implausible identity spread
+      id: 9a4d3c20-0507-4c01-9e01-abuse0001
+      status: experimental
+      description: One credential serving many distinct principals, the signature of a shared or resold key
+      logsource:
+          product: genai_gateway
+          category: token_accounting
+      detection:
+          selection:
+              endpoint.route|exists: true
+          condition: selection | count(distinct identity.user_id) by identity.api_key_id over 1h > 25
+      fields:
+          - identity.api_key_id
+          - identity.org_id
+          - endpoint.route
+      falsepositives:
+          - Service accounts fronting a legitimate multi-user application; allowlist by api_key_id with an owner and a review date
+      level: medium
+      tags:
+          - owasp_llm.2025.llm10
+          - attack.credential_access
+      ---
+      # sigma_api_abuse_rules.yml (rule 2 of 4)
+      # Section 0507 -- 20260718 | Detection Engineering: AI Security Detection (Section 0507 Extraction and API Abuse Detection) by Raghav Dinesh
+      title: Cost velocity break against identity history
+      id: 9a4d3c20-0507-4c02-9e02-abuse0002
+      status: experimental
+      description: Consumption cost for an identity departs sharply from its own trailing profile
+      logsource:
+          product: genai_gateway
+          category: token_accounting
+      detection:
+          selection:
+              consumption.estimated_cost_units|exists: true
+          condition: selection | sum(consumption.estimated_cost_units) by identity.user_id over 1h > 8 * baseline_hourly_cost(identity.user_id)
+      fields:
+          - identity.user_id
+          - identity.org_id
+          - consumption.estimated_cost_units
+      falsepositives:
+          - Genuine launch or migration traffic; expect a burst window and confirm against change records rather than suppressing
+      level: high
+      tags:
+          - owasp_llm.2025.llm10
+      comment: >
+          baseline_hourly_cost() is a platform-provided baseline lookup, not a literal
+          Sigma function. Where the platform cannot express per-entity baselines in
+          rule syntax, this belongs in the scoring layer instead -- do not degrade it
+          into a fixed cost cap, which is the global-threshold failure.
+      ---
+      # sigma_api_abuse_rules.yml (rule 3 of 4)
+      # Section 0507 -- 20260718 | Detection Engineering: AI Security Detection (Section 0507 Extraction and API Abuse Detection) by Raghav Dinesh
+      title: Sustained low-rate querying across an extended window
+      id: 9a4d3c20-0507-4c03-9e03-abuse0003
+      status: experimental
+      description: Slow-burn volume that stays under any per-hour rate limit but accumulates over weeks
+      logsource:
+          product: genai_gateway
+          category: token_accounting
+      detection:
+          selection:
+              outcome.status: ok
+          condition: selection | count() by identity.user_id over 21d > 50000 and max_hourly_rate(identity.user_id) < 200
+      fields:
+          - identity.user_id
+          - endpoint.model_id
+      falsepositives:
+          - Long-running batch integrations; these clear on diversity in the scoring layer, so route rather than suppress
+      level: medium
+      tags:
+          - owasp_llm.2025.llm10
+      comment: >
+          This rule exists because rate limiting is a per-window control and extraction
+          is a per-campaign attack. It deliberately looks for traffic that is polite by
+          every short-window measure. Retention must exceed the window (see schema).
+      ---
+      # sigma_api_abuse_rules.yml (rule 4 of 4)
+      # Section 0507 -- 20260718 | Detection Engineering: AI Security Detection (Section 0507 Extraction and API Abuse Detection) by Raghav Dinesh
+      title: Refusal-ratio spike indicating boundary probing
+      id: 9a4d3c20-0507-4c04-9e04-abuse0004
+      status: experimental
+      description: An identity accumulating refusals at a rate consistent with systematic capability mapping
+      logsource:
+          product: genai_gateway
+          category: token_accounting
+      detection:
+          selection:
+              outcome.status: refused
+          condition: selection | count() by identity.user_id over 1h > 40
+      fields:
+          - identity.user_id
+          - endpoint.model_id
+      falsepositives:
+          - New integrations miscalling the API; correlate with error status and first-seen identity age before escalating
+      level: medium
+      tags:
+          - owasp_llm.2025.llm10
+          - owasp_llm.2025.llm01
+  deliverable_2:
+    title: 'Extraction Detector'
+    filename: 'extraction_detector.py'
+    description: |-
+      Per-identity baseline and query-diversity anomaly scorer. Runs both a
+      global volume threshold and per-identity composite scoring over the same
+      three-identity traffic, proving the threshold cannot separate a
+      sanctioned integrator from an extraction campaign while the baseline
+      approach can -- then runs an ablation attributing the composite score to
+      its signal groups.
+    implementation_notes: |-
+      Single quotes throughout per book convention; no double-quotes at all.
+      The deviation unit carries a floor expressed as a fraction of the
+      identity own mean, preventing a steady identity from flagging on trivial
+      variation -- the classic per-identity baselining noise failure. Composite
+      weights are a module-level constant so a score can be decomposed in
+      triage. Every claim in the demo is an assertion: the integrator must
+      clear, the extractor must flag, and neither ablation half may clear the
+      bar alone, so a future weight change that breaks the section argument
+      fails the build rather than silently invalidating the prose.
+    code: |
+      #!/usr/bin/env python3
+      # extraction_detector.py
+      # Section 0507 -- Model Extraction and API Abuse: Rate Anomaly Detection
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0507 Extraction and API Abuse Detection) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Per-identity baseline and query-diversity scoring for model extraction.
+
+      The section thesis in executable form: extraction hides in the aggregate, so
+      the detection lives in the BASELINE, not in a rule threshold. This module
+      demonstrates the claim by running both approaches over the same traffic:
+
+        global threshold  -- one volume cutoff for everyone. Flags the legitimate
+                             batch integrator, misses the patient extractor.
+        per-identity      -- each identity scored against its own established
+                             envelope, combined with diversity, coverage, parameter
+                             sweep, and refusal signals.
+
+      Only the second separates the two. That is the whole argument.
+
+      Signals come from the token_accounting family (deliverable 3): metadata only,
+      no prompt content. Diversity uses prompt_fingerprint, never prompt text.
+      '''
+      from __future__ import annotations
+
+      import statistics
+      import sys
+      from collections import Counter
+      from dataclasses import dataclass, field
+
+      # Weights for the composite extraction score. Tuned to the signal scales below,
+      # and deliberately exposed rather than buried: an unreviewable score is an
+      # unreviewable alert.
+      WEIGHTS = {
+          'volume_z': 0.30,
+          'diversity': 0.25,
+          'coverage': 0.20,
+          'parameter_sweep': 0.15,
+          'refusal_ratio': 0.10,
+      }
+
+
+      @dataclass
+      class Baseline:
+          '''An identity established consumption envelope, learned from its own history.'''
+
+          identity: str
+          request_means: list = field(default_factory=list)
+
+          @property
+          def mean(self) -> float:
+              return statistics.mean(self.request_means) if self.request_means else 0.0
+
+          @property
+          def stdev(self) -> float:
+              if len(self.request_means) < 2:
+                  return 0.0
+              return statistics.stdev(self.request_means)
+
+          def z_score(self, value: float) -> float:
+              '''Deviation from this identity own normal, not from a global norm.
+
+              A floor on the deviation unit prevents a perfectly steady identity
+              (stdev near zero) from flagging on trivial variation -- the classic
+              way per-identity baselining produces noise.
+              '''
+              spread = max(self.stdev, 0.15 * self.mean, 1.0)
+              return round((value - self.mean) / spread, 2)
+
+
+      def window_signals(events: list) -> dict:
+          '''Derive the signals the schema promises, over one identity window.'''
+          n = len(events)
+          if n == 0:
+              return {}
+          fingerprints = [e['prompt_fingerprint'] for e in events]
+          distinct = len(set(fingerprints))
+          # Coverage: how evenly the requests spread across topic buckets. Systematic
+          # enumeration maximises spread; real work clusters.
+          buckets = Counter(f.split('-')[0] for f in fingerprints)
+          even_share = 1.0 / len(buckets) if buckets else 0.0
+          spread = 1.0 - sum(abs(c / n - even_share) for c in buckets.values()) / 2
+          return {
+              'requests': n,
+              'diversity': round(distinct / n, 3),
+              'coverage': round(spread * (len(buckets) / 8.0), 3),
+              'parameter_sweep': round(len({e['parameters_hash'] for e in events}) / n, 3),
+              'refusal_ratio': round(sum(e['status'] == 'refused' for e in events) / n, 3),
+              'tokens': sum(e['input_tokens'] + e['output_tokens'] for e in events),
+          }
+
+
+      def global_threshold_verdict(sig: dict, request_cap: int) -> str:
+          '''The naive approach: one volume cutoff applied to every identity.'''
+          return 'FLAG' if sig['requests'] > request_cap else 'clear'
+
+
+      def extraction_score(sig: dict, baseline: Baseline) -> dict:
+          '''Composite per-identity score. Volume matters only relative to the
+          identity own envelope; the behavioural signals carry the rest.'''
+          z = baseline.z_score(sig['requests'])
+          components = {
+              'volume_z': min(1.0, max(0.0, z / 6.0)),
+              'diversity': sig['diversity'],
+              'coverage': min(1.0, sig['coverage']),
+              'parameter_sweep': sig['parameter_sweep'],
+              'refusal_ratio': min(1.0, sig['refusal_ratio'] * 3),
+          }
+          score = sum(WEIGHTS[k] * v for k, v in components.items())
+          return {'score': round(score, 3), 'z': z,
+                  'components': {k: round(v, 3) for k, v in components.items()}}
+
+
+      def _synth(identity: str, n: int, distinct_ratio: float, buckets: int,
+                 params: int, refusals: int, tokens: int) -> list:
+          '''Build a synthetic window with controlled signal properties.'''
+          events = []
+          for i in range(n):
+              fp_index = i if i < int(n * distinct_ratio) else 0
+              events.append({
+                  'user_id': identity,
+                  'prompt_fingerprint': str(i % buckets) + '-' + str(fp_index),
+                  'parameters_hash': 'p' + str(i % params),
+                  'status': 'refused' if i < refusals else 'ok',
+                  'input_tokens': tokens,
+                  'output_tokens': tokens,
+              })
+          return events
+
+
+      def _demo() -> int:
+          # Three identities, one window each.
+          #  normal      -- ordinary interactive use
+          #  integrator  -- SANCTIONED batch consumer: very high volume, but narrow
+          #                 and repetitive (same task shape over and over)
+          #  extractor   -- patient distillation campaign: volume only modestly above
+          #                 its own history, but maximally diverse and systematic
+          windows = {
+              'normal-user': _synth('normal-user', 40, 0.5, 3, 2, 0, 300),
+              'batch-integrator': _synth('batch-integrator', 900, 0.02, 2, 1, 0, 250),
+              'extractor': _synth('extractor', 220, 0.98, 8, 6, 12, 400),
+          }
+          # Each identity own established envelope, learned from prior windows.
+          baselines = {
+              'normal-user': Baseline('normal-user', [35, 42, 38, 45, 40]),
+              'batch-integrator': Baseline('batch-integrator', [880, 910, 895, 905, 890]),
+              'extractor': Baseline('extractor', [95, 110, 88, 102, 99]),
+          }
+
+          print('signals per identity (token_accounting derived, metadata only)')
+          print('-' * 78)
+          sigs = {}
+          for name, events in windows.items():
+              s = window_signals(events)
+              sigs[name] = s
+              print(name.ljust(20) + 'req=' + str(s['requests']).ljust(6)
+                    + 'div=' + str(s['diversity']).ljust(7)
+                    + 'cov=' + str(s['coverage']).ljust(7)
+                    + 'sweep=' + str(s['parameter_sweep']).ljust(7)
+                    + 'refuse=' + str(s['refusal_ratio']))
+
+          # Approach 1: a single global volume threshold, set to catch the extractor
+          # volume. Whatever value is chosen, the integrator dwarfs it.
+          cap = 200
+          print('\napproach 1: global volume threshold (cap=' + str(cap) + ' requests/window)')
+          print('-' * 78)
+          global_verdicts = {}
+          for name, s in sigs.items():
+              v = global_threshold_verdict(s, cap)
+              global_verdicts[name] = v
+              print('  ' + name.ljust(20) + v)
+
+          # Approach 2: per-identity baseline plus behavioural signals.
+          print('\napproach 2: per-identity baseline + query-pattern signals')
+          print('-' * 78)
+          scored = {}
+          for name, s in sigs.items():
+              r = extraction_score(s, baselines[name])
+              scored[name] = r
+              verdict = 'FLAG' if r['score'] >= 0.5 else 'clear'
+              print('  ' + name.ljust(20) + 'score=' + str(r['score']).ljust(7)
+                    + 'z=' + str(r['z']).ljust(7) + verdict)
+              print('      components: ' + str(r['components']))
+
+          print('\n' + '-' * 78)
+          # The claims, asserted rather than described.
+          assert global_verdicts['batch-integrator'] == 'FLAG', 'demo invalid'
+          assert global_verdicts['extractor'] == 'FLAG'
+          print('global threshold: flags the SANCTIONED integrator as loudly as the')
+          print('extractor -- an alert an analyst learns to dismiss, taking the real')
+          print('detection with it. Raising the cap above the integrator hides the')
+          print('extractor entirely. There is no cap that separates them.')
+
+          assert scored['extractor']['score'] >= 0.5, 'extractor must flag'
+          assert scored['batch-integrator']['score'] < 0.5, 'sanctioned integrator must clear'
+          assert scored['normal-user']['score'] < 0.5, 'ordinary user must clear'
+          assert scored['extractor']['score'] > scored['batch-integrator']['score']
+          print('\nper-identity baseline: extractor ' + str(scored['extractor']['score'])
+                + ' flags while the higher-VOLUME integrator clears at '
+                + str(scored['batch-integrator']['score']) + '.')
+
+          # Ablation: measure what each signal group actually contributes rather than
+          # asserting it. Honest attribution matters -- a detector whose authors are
+          # wrong about why it works cannot be tuned.
+          print('\nablation: contribution of each signal group to the extractor score')
+          print('-' * 78)
+          ex_sig, ex_base = sigs['extractor'], baselines['extractor']
+          full = extraction_score(ex_sig, ex_base)['score']
+          comps = extraction_score(ex_sig, ex_base)['components']
+          behavioural = sum(WEIGHTS[k] * comps[k] for k in
+                            ('diversity', 'coverage', 'parameter_sweep', 'refusal_ratio'))
+          relative_volume = WEIGHTS['volume_z'] * comps['volume_z']
+          print('  behavioural signals only (no volume): ' + str(round(behavioural, 3)))
+          print('  relative-volume contribution:         ' + str(round(relative_volume, 3)))
+          print('  full score:                           ' + str(full))
+
+          # The honest conclusion: BOTH halves are load bearing. Behavioural signals
+          # alone fall just short of the threshold; relative volume alone is nowhere
+          # near it. What fails completely is ABSOLUTE volume, which ranks the
+          # sanctioned integrator four times higher than the extractor.
+          assert behavioural < 0.5, 'behavioural signals alone should not clear the bar here'
+          assert relative_volume < 0.5, 'relative volume alone should not clear the bar either'
+          assert sigs['batch-integrator']['requests'] > 4 * sigs['extractor']['requests']
+          print('\nneither half suffices alone -- and note the extractor sent FOUR TIMES')
+          print('FEWER requests than the integrator it outscores. Volume is informative')
+          print('only relative to an identity own envelope (z=' + str(full and scored['extractor']['z'])
+                + '); in absolute terms it points at the wrong identity entirely.')
+          print('That is why extraction hides in the aggregate: the detection lives in')
+          print('the baseline, not the rule threshold.')
+          return 0
+
+
+      if __name__ == '__main__':
+          sys.exit(_demo())
+  deliverable_3:
+    title: 'Token Accounting Schema'
+    filename: 'token_accounting_schema.yaml'
+    description: |-
+      The consumption telemetry family specified: identity at three
+      granularities, endpoint, consumption counts including cache hits, request
+      shape with a prompt fingerprint, and outcome -- plus the derived signals
+      the detection layer computes over windows, and the retention rule that
+      slow-burn detection depends on.
+    implementation_notes: |-
+      Metadata-only is the enabling constraint, not a limitation: it keeps this
+      family out of the restricted-content regime, which is what makes the long
+      retention slow-burn detection requires defensible to a privacy reviewer.
+      The prompt fingerprint is the pattern worth generalising -- a
+      locality-sensitive hash that carries the similarity property diversity
+      scoring needs without retaining prompt text, computed at emission and
+      shipped alone. Derived signals are listed but explicitly not emitted: the
+      gateway emits facts cheaply, the detection layer computes meaning over
+      windows.
+    code: |
+      # token_accounting_schema.yaml
+      # Section 0507 -- Model Extraction and API Abuse: Rate Anomaly Detection
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0507 Extraction and API Abuse Detection) by Raghav Dinesh
+      #
+      # The token_accounting family from the Section 5.1 inventory, specified.
+      # Deliberately METADATA ONLY: no prompt or completion content appears here.
+      # That is what lets consumption telemetry carry long retention and broad
+      # analyst access while prompts and completions stay in the restricted-content
+      # regime -- and long retention is exactly what slow-burn extraction detection
+      # needs.
+      schema_version: '1.0'
+      telemetry_family: 'token_accounting'
+      privacy_class: 'metadata -- no content, no rationale spans, no context text'
+      emission_point: 'LLM gateway, one event per request; billing plane as reconciliation source'
+      core_attributes:
+        event_id: 'uuid'
+        timestamp: 'rfc3339'
+        identity:
+          user_id: 'string -- the acting principal'
+          api_key_id: 'string -- credential used; distinct from user_id, an extractor may rotate keys under one identity'
+          org_id: 'string -- tenant, for peer-group baselining'
+        endpoint:
+          model_id: 'string'
+          route: 'string -- logical endpoint or application'
+        consumption:
+          input_tokens: 'int'
+          output_tokens: 'int'
+          cached_input_tokens: 'int -- cache hits change the cost profile and must not be double counted'
+          estimated_cost_units: 'float -- normalised cost, not currency; see cost_signal notes'
+        request_shape:
+          parameters_hash: 'string -- hash of sampling parameters (temperature, top_p, penalties)'
+          prompt_length_tokens: 'int'
+          prompt_fingerprint: 'string -- locality-sensitive hash of the prompt, NOT the prompt'
+          tool_count: 'int'
+        outcome:
+          status: 'enum: ok | refused | error | timeout'
+          latency_ms: 'int'
+      derived_signals:
+        note: >
+          Computed by the detection layer over windows of core events, not emitted by
+          the gateway. Listed here because the schema exists to make them computable.
+        volume: 'requests and tokens per identity per window'
+        diversity: 'distinct prompt_fingerprint count over total requests -- the extraction tell'
+        coverage: 'spread of fingerprints across the embedding or topic space; systematic enumeration maximises it'
+        parameter_sweep: 'distinct parameters_hash values per identity -- temperature sweeps probe model behaviour, not answers'
+        refusal_ratio: 'refused over total; probing for boundaries raises it'
+        cost_velocity: 'estimated_cost_units per unit time against the identity own history'
+      prompt_fingerprint_notes:
+        what: 'a locality-sensitive hash (e.g. SimHash over shallow features) that is stable under paraphrase'
+        why: >
+          Diversity and coverage need to know whether two requests are SIMILAR without
+          retaining what they said. A fingerprint gives the detection layer the
+          signal while keeping this family metadata-only.
+        what_it_is_not: 'not reversible, not a content store, and never used to reconstruct prompts'
+      retention:
+        rule: >
+          Long by design -- extraction campaigns run for weeks, so a 30-day window is
+          a blind spot, not a policy. Metadata-only classification is what makes long
+          retention defensible; adding content here would force short retention and
+          destroy the detection.
+  deliverable_4:
+    title: 'Abuse Alert Handoff Contract (stub)'
+    filename: 'abuse_alert_playbook_stub.md'
+    description: |-
+      The detection-side half of the response boundary: what an abuse alert
+      must carry for a response system to act on it, what it must never carry,
+      and a severity-to-response-tier mapping stated as a contract rather than
+      an implementation. Completed in Chapter 12.
+    implementation_notes: |-
+      Deliberately a stub, and deliberately not a playbook. Response automation
+      -- rate limiting, revocation, approval workflow, rollback -- is Chapter
+      12, and building it here would couple detection to a response system that
+      does not exist yet. Two contract terms carry the weight: the alert
+      excludes content, so abuse alerts cannot drag the metadata-only family
+      into the restricted-content regime; and the alert excludes a recommended
+      action, because detection reports what it observed and how confidently
+      while choosing the action is a policy decision response owns.
+    code: |
+      <!--
+      abuse_alert_playbook_stub.md
+      Section 0507 -- Model Extraction and API Abuse: Rate Anomaly Detection
+      20260718 | Detection Engineering: AI Security Detection (Section 0507 Extraction and API Abuse Detection) by Raghav Dinesh
+      -->
+      # Abuse Alert Handoff Contract (stub)
+
+      **Scope note.** This is the detection side of the boundary only: what an
+      abuse alert must carry so that a response system can act on it. The response
+      automation itself -- rate limiting, key revocation, tenant throttling, and
+      the approval workflow around them -- is Chapter 12 (Automated Response and
+      Orchestration). Building response logic here would couple detection to a
+      response system that does not exist yet, which is the coupling Chapter 12
+      exists to prevent.
+
+      ## What the alert must carry
+
+      | Field | Why response needs it |
+      |---|---|
+      | `identity.user_id`, `identity.api_key_id`, `identity.org_id` | The three revocation granularities. Revoking the wrong one either misses the abuser or takes down a tenant. |
+      | `score` and `components` | The response tier depends on which signals fired: a diversity-driven extraction score and a cost-velocity spike warrant different actions. |
+      | `baseline_summary` (mean, spread, window count) | Lets a human see what "normal" meant for this identity without re-querying. |
+      | `window_start`, `window_end` | Campaign scope. Slow-burn cases span weeks and the window is the evidence. |
+      | `sanctioned_bulk` flag | Whether this identity is on the reviewed allowlist. Response for an allowlisted identity is a conversation, not a revocation. |
+      | `evidence_query` | A re-runnable platform query returning the contributing events, so triage never depends on the alert body alone. |
+
+      ## What the alert must NOT carry
+
+      - Prompt or completion content. The token_accounting family is metadata-only
+        by design (see `token_accounting_schema.yaml`); pulling content into an
+        abuse alert would drag this family into the restricted-content regime and
+        force retention short enough to break slow-burn detection.
+      - A recommended action. Detection reports what it observed and how
+        confidently. Choosing between throttle, challenge, revoke, and contact is
+        a policy decision owned by response.
+
+      ## Severity to response-tier mapping (contract, not implementation)
+
+      | Detection state | Meaning | Response tier (Chapter 12) |
+      |---|---|---|
+      | Score above threshold, identity allowlisted | Sanctioned bulk consumer behaving unusually | Notify owner; no automated action |
+      | Score above threshold, not allowlisted | Probable extraction campaign | Graduated: challenge, then throttle |
+      | Cost velocity break, short window | Possible compromised credential or runaway client | Fast throttle, owner contact |
+      | Credential spread across many principals | Shared or resold key | Key-scoped action, not identity-scoped |
+
+      ## Open items for Chapter 12
+
+      - Rollback semantics for an automated throttle applied to a false positive.
+      - Human-in-the-loop placement: which tiers require approval before action.
+      - Feedback path: adjudicated outcomes returning to the baseline as labels.
+common_mistakes:
+  mistake_1:
+    description: |-
+      Detecting extraction with a global rate threshold -- one requests-per-
+      window cap applied to every identity.
+    why_it_happens: |-
+      Rate limits already exist for capacity reasons, attaching an alert costs
+      one line, and volume feels like the obvious axis for an attack whose
+      defining property is sending many requests.
+    consequence: |-
+      No cap separates the cases. Set low enough to catch a campaign, it flags
+      the largest legitimate consumer -- who sends far more traffic -- and the
+      analyst learns to dismiss the rule. Set above that consumer, and every
+      realistic campaign passes silently underneath.
+    correct_approach: |-
+      Baseline per identity and combine relative volume with behavioural
+      signals: diversity, coverage, parameter sweep, refusal ratio. When a
+      threshold correct value depends on who is asking, it is a baseline
+      problem wearing a rule costume.
+  mistake_2:
+    description: |-
+      Putting prompt or completion content into consumption telemetry so that
+      diversity can be measured directly.
+    why_it_happens: |-
+      Diversity genuinely needs to know whether two requests were similar, and
+      the obvious way to compare requests is to keep them. The data is already
+      flowing through the gateway.
+    consequence: |-
+      The family moves into the restricted-content regime, which forces short
+      retention and partitioned access. Slow-burn extraction runs for weeks, so
+      a thirty-day window is a blind spot rather than a policy, and the
+      detection this telemetry existed to enable is destroyed by the schema
+      choice.
+    correct_approach: |-
+      Derive the property at emission and ship it alone: a locality-sensitive
+      prompt fingerprint carries similarity without content, keeps the family
+      metadata-only, and keeps months-long retention defensible. Generalise the
+      pattern -- ask what property of the content the signal actually needs.
+  mistake_3:
+    description: |-
+      Per-identity baselining without a deviation floor, dividing by whatever
+      spread the identity history shows.
+    why_it_happens: |-
+      The statistics are textbook and the formula looks complete. Identities
+      with near-zero variance are not the ones anyone tests against.
+    consequence: |-
+      A perfectly steady identity -- a scheduled job sending the same volume
+      every window -- has near-zero spread, so trivial variation produces
+      enormous deviation scores and a permanent stream of alerts from the most
+      predictable traffic on the platform.
+    correct_approach: |-
+      Floor the deviation unit at a fraction of the identity own mean so it
+      scales with the identity, as the baseline deliverable does. Chapter 10
+      covers the variance-aware treatment in full.
+  mistake_4:
+    description: |-
+      Shipping a composite score without attribution -- publishing a number and
+      a threshold with no way to decompose either.
+    why_it_happens: |-
+      The score works on the evaluation traffic, the weights feel
+      self-explanatory to whoever chose them, and ablation looks like academic
+      overhead next to a detector that already separates the cases.
+    consequence: |-
+      Nobody can tune it, triage it, or argue with it. Worse, the authors
+      routinely misattribute their own detector -- this section first claimed
+      the separation came from behavioural signals rather than volume, which
+      the measurement contradicted.
+    correct_approach: |-
+      Expose the weights as a reviewable constant, emit components with every
+      verdict, and run an ablation that reports each signal group contribution
+      as executable assertions, so a weight change that invalidates the claim
+      fails the build.
+  mistake_5:
+    description: |-
+      Building response automation into the detector -- auto-throttling or
+      revoking credentials directly from the scoring layer.
+    why_it_happens: |-
+      The detector already knows the identity and the severity, the action
+      feels like the natural next line of code, and routing through a response
+      system that has not been built yet feels like ceremony.
+    consequence: |-
+      Detection and response become one artifact with one release cycle: a
+      threshold change becomes a production access change, a false positive
+      becomes an outage with no rollback path, and the policy question of when
+      to revoke gets answered implicitly by whoever wrote the scoring function.
+    correct_approach: |-
+      Define the handoff contract and stop: what the alert carries, what it
+      excludes, and how detection states map to response tiers. Detection
+      reports what it observed and how confidently; choosing the action is
+      policy, and Chapter 12 owns it.
+
+section_summary:
+  compact: |-
+    Model extraction, quota fraud, and denial of wallet are invisible in any
+    single request -- each is authorised, well-formed, and paid for -- so the
+    detection has to live in the relationship between requests. That starts
+    with a deliberately metadata-only consumption schema whose prompt
+    fingerprint carries similarity without content, keeping the family out of
+    the restricted-content regime and making the months-long retention
+    slow-burn campaigns require defensible. On that telemetry, a global volume
+    threshold provably fails in both directions: set to catch a campaign it
+    flags the sanctioned integrator sending four times more traffic, and set
+    above that integrator it misses every realistic campaign. Per-identity
+    baselining with a floored deviation unit, combined with diversity,
+    coverage, parameter sweep, and refusal signals, produces the separation
+    instead -- extractor 0.767 flagged, integrator 0.057 cleared -- and an
+    ablation attributes the result honestly: behavioural signals and relative
+    volume are each load-bearing and neither suffices alone, while absolute
+    volume actively points at the wrong identity. Deterministic pieces such as
+    credential spread, cost velocity, and slow-burn accumulation stay in Sigma
+    rules that explicitly refuse to degrade baselines into fixed caps, and
+    everything past the alert is a handoff contract owned by Chapter 12.
+  key_takeaways:
+  - 'Extraction is invisible per request and visible per baseline: no payload
+    to score, no policy violated, and the malicious property exists only across
+    thousands of authorised calls'
+  - 'When a threshold correct value depends on who is asking, it is a baseline
+    problem wearing a rule costume -- no global volume cap separates an
+    extraction campaign from a larger sanctioned integrator'
+  - 'Metadata-only telemetry is the enabling constraint, not a limitation: it
+    buys the long retention slow-burn detection needs, and a prompt fingerprint
+    supplies similarity without content'
+  - 'Per-identity baselines need a deviation floor scaled to the identity own
+    mean, or the steadiest traffic on the platform becomes the loudest alert
+    source'
+  - 'Attribute composite detectors by ablation and assert the result: this
+    section first claimed the wrong signal was carrying the detection, and only
+    the measurement caught it'
+  - 'Detection stops at the handoff contract -- the alert carries identity
+    granularities, score components, baseline summary, and evidence query, but
+    never content and never a recommended action'
+
+preview_section_05_08:
+  title: 'LLM Output Monitoring: PII Leakage, Toxicity, Data Exfiltration'
+  summary: |-
+    Sections 5.4 through 5.7 covered everything entering the model and
+    everything consumed by it. Section 5.8 turns to what comes out, on the
+    argument that monitoring only prompts misses half the attack surface:
+    completions carry PII and secret leakage, policy-evasion evidence, and
+    exfiltration payloads staged across turns that only correlation can catch.
+    It builds PII detection with per-data-class method selection, output policy
+    scoring, exfiltration patterns including the system-prompt canary that
+    pairs with the extraction attempts seen here, and the strict separation
+    between detecting an incident and redacting its content -- because
+    coupling them hides incidents.
+
+metadata:
+  tags:
+  - 'model-extraction'
+  - 'api-abuse'
+  - 'rate-anomaly'
+  - 'per-identity-baselining'
+  - 'query-diversity'
+  - 'cost-anomaly'
+  - 'token-accounting'
+  - 'metadata-only-telemetry'
+  - 'prompt-fingerprint'
+  - 'slow-burn-correlation'
+  - 'signal-ablation'
+  - 'llm10'
+  - 'ai-security'
+  - 'detection-as-code'
+  cross_chapter_references:
+  - 'Chapter 2, Section 2.3: the stateful correlation engine behind slow-burn
+    windows and per-entity baselines'
+  - 'Chapter 10: variance-aware statistical baselining, previewed by the
+    floored deviation unit used here'
+  - 'Chapter 12: response orchestration, which owns everything past the
+    handoff contract deliverable'
+  - 'Section 5.1: the token_accounting family and the gateway emission point'
+  - 'Section 5.2: the LLM10 coverage row and the Sigma tag convention'
+  - 'Section 5.3: the model_extraction and cost_harvesting hypotheses and the
+    extraction-campaign test scenario'
+  forward_references:
+  - 'Section 5.8: output-side monitoring, including the system-prompt canary
+    that pairs with the extraction attempts detected here'
+  - 'Section 5.9: places the traffic-side tiers under a latency budget; these
+    aggregate detections run asynchronously by design'
+  - 'Section 5.10: consolidates the coverage matrix with LLM10 filled'
