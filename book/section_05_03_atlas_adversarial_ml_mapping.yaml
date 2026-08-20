@@ -1,0 +1,1020 @@
+# section_05_03_atlas_adversarial_ml_mapping.yaml
+
+---
+document_info:
+  title: 'ATLAS ATT&CK for ML: Mapping Adversarial ML Tactics to Detection'
+  chapter: 5
+  section: 3
+  section_code: '0503'
+  author: 'Raghav Dinesh'
+  github: 'https://github.com/ruwgxo/detection-engineering-at-scale'
+  license: 'MIT'
+  version: '1.0'
+  created: '2026-07-17'
+  estimated_pages: 4
+  estimated_reading_time: '30-40 minutes'
+
+section_overview:
+  one_line_summary: |-
+    MITRE ATLAS gives the AI surface what ATT&CK gives intrusions -- an
+    adversary-TTP enumeration grounded in real incidents -- and this section
+    runs the Section 5.2 conversion machinery against it: techniques become
+    detection hypotheses scoped by an observability audit, case studies become
+    a regression test corpus, a crosswalk joins the ATLAS view to the LLM Top
+    10 matrix on stable attack-class keys, and the do-not-cite-from-memory
+    rule for a fast-moving framework is enforced in code rather than in
+    good intentions.
+  why_this_section_exists: |-
+    The Section 5.2 matrix answers 'which risks does the program cover', but a
+    risk list is the defender's taxonomy. Adversaries do not work through risk
+    lists; they execute tactics and techniques, and the enumeration that
+    catalogues those -- observed in real incidents, structured the way
+    Chapter 1 taught the reader to think -- is MITRE ATLAS. A detection
+    program that maps only to OWASP can say what it covers; a program that
+    also maps to ATLAS can say what it would catch, because ATLAS entries
+    describe adversary behaviour, which is the thing detections actually fire
+    on.
+
+    ATLAS needs its own section rather than a paragraph in 5.2 for two
+    reasons. First, a TTP framework demands a discipline a risk list does
+    not: the observability audit. ATLAS catalogues the full adversarial ML
+    lifecycle, and a substantial share of its techniques -- surrogate model
+    training, offline adversarial example crafting, research-stage staging
+    work -- happen on infrastructure the defender does not operate and
+    therefore produce no events any platform telemetry can carry. Importing
+    the matrix as a coverage obligation without that audit manufactures
+    coverage claims for attacks the platform physically cannot see, which is
+    the precise failure mode Section 5.1 exists to prevent. Second, ATLAS
+    moves fast -- major releases have added double-digit technique counts
+    within single quarters -- so the citation discipline that was policy in
+    5.2 becomes mechanism here: technique IDs resolve against the pinned
+    release through a resolution map, and the backlog generator refuses to
+    ship a backlog containing an ID cited from memory.
+  position_in_chapter: |-
+    Third section of Chapter 5 and the close of the chapter's framework
+    layer. Section 5.1 built the attack surface map and telemetry inventory;
+    Section 5.2 converted the OWASP LLM Top 10 into a coverage matrix; this
+    section applies the identical conversion to MITRE ATLAS, proves the
+    machinery is framework-agnostic, and joins both views on the stable
+    attack-class keys so the platform holds one unified coverage picture.
+    From here the chapter builds: Sections 5.4 through 5.8 implement the
+    detectors the unified map assigns, using the case-study-derived scenarios
+    this section packages as their regression tests, and Section 5.10
+    consolidates the completed map.
+
+learning_objectives:
+  knowledge:
+  - 'Describe the structure of MITRE ATLAS -- tactics, techniques,
+    sub-techniques, mitigations, and case studies -- and its lineage from
+    ATT&CK'
+  - 'Name the two AI-specific tactics that distinguish ATLAS from ATT&CK and
+    explain what each covers'
+  - 'Explain where the ATT&CK analogy holds for detection engineering and the
+    three places it breaks'
+  - 'Define the observability audit and the three observability ratings, and
+    explain why a TTP framework demands one where a risk list does not'
+  - 'Explain why ATLAS technique counts and IDs are treated as volatile and
+    what the two-sided pin from Section 5.2 looks like when applied here'
+  - 'Describe how ATLAS case studies differ from technique entries and why
+    incident-grounded case studies make better regression tests than
+    synthetic samples'
+  - 'State how the crosswalk joins ATLAS and OWASP views without double-
+    counting coverage or hiding seams'
+  skills:
+  - 'Translate an ATLAS technique into a detection hypothesis bound to the
+    Section 5.1 telemetry families, per the restatement pattern'
+  - 'Assign observability ratings to technique families and defend the
+    not-observable exclusions in review'
+  - 'Maintain the ID resolution map against the pinned release and read the
+    generator''s [ID-UNRESOLVED] block as the citation-discipline gate it is'
+  - 'Generate and read the prioritised detection backlog: priority scores,
+    telemetry gaps, and owner assignments'
+  - 'Derive rule regression test scenarios from ATLAS case studies'
+  security_mindset:
+  - 'Distrust any coverage claim over a technique the platform''s telemetry
+    cannot physically witness -- audit observability before claiming reach'
+  - 'Treat framework volatility as an engineering input: pin what you cite,
+    verify at source, and make unresolved citations fail loudly'
+  - 'Prefer incident-grounded test scenarios over invented ones; the attacks
+    that happened are the minimum bar for what the detectors must catch'
+
+prerequisites:
+- 'Section 5.1: the attack surface map whose stable keys this section''s
+  artifacts join on, and the five telemetry families'
+- 'Section 5.2: the coverage matrix, the restatement pattern, the
+  detectability classes, and the two-sided pin -- all reapplied here'
+- 'Chapter 1, Section 1.4: ATT&CK as architecture -- the tactic-and-technique
+  mental model ATLAS inherits'
+- 'Chapter 3: detection-as-code lifecycle and the unit-test harness the test
+  scenarios feed'
+- 'Working Python and YAML fluency for the deliverables'
+- 'The live ATLAS matrix at atlas.mitre.org open while working -- this
+  section deliberately ships technique names and a resolution workflow, not
+  memorised IDs'
+
+prose_content:
+  part_1:
+    title: 'ATLAS: The Adversary View of the AI Surface'
+    body: |-
+      MITRE ATLAS -- the Adversarial Threat Landscape for Artificial-
+      Intelligence Systems -- is the ATT&CK-shaped enumeration for attacks on
+      AI and ML systems: a living knowledge base of adversary tactics and
+      techniques, grounded in documented real-world incidents, maintained by
+      MITRE with community contribution. It grew out of the joint
+      MITRE-Microsoft adversarial ML threat matrix work and deliberately
+      inherits ATT&CK's structural conventions, which is a gift to this book's
+      reader: the tactic-and-technique mental model built in Chapter 1
+      transfers directly, and so does the coverage-mapping discipline built on
+      top of it.
+
+      The structure has five elements a detection engineer uses differently.
+      Tactics are the adversary's objectives, laid out along an attack
+      lifecycle from reconnaissance through impact; most are inherited or
+      adapted from ATT&CK, and two are AI-specific and carry most of the
+      framework's identity. AI Model Access covers the adversary's routes to
+      the model itself -- inference APIs, the surrounding application, model
+      artifacts. AI Attack Staging covers preparation aimed at the model:
+      crafting adversarial inputs, training surrogate models, poisoning data,
+      planting backdoors. Techniques are the concrete methods under each
+      tactic -- the unit this section translates into hypotheses -- with
+      sub-techniques refining them. Mitigations are the control-side pairing.
+      And case studies are the element ATT&CK readers underuse: documented
+      real-world incidents, each mapped to the tactics and techniques it
+      exercised, which makes them ready-made attack chains for testing
+      detectors rather than reading material. As of the v5.x releases the
+      matrix spans roughly sixteen tactics and eighty-plus techniques with
+      dozens of case studies -- figures quoted here deliberately as
+      approximations, for reasons part 6 makes structural.
+  part_2:
+    title: 'Where the ATT&CK Analogy Holds, and the Three Places It Breaks'
+    body: |-
+      The analogy holds where it matters most: ATLAS entries describe
+      adversary behaviour, behaviour produces observables, and observables are
+      what detections fire on. The Chapter 1 coverage-map discipline --
+      enumerate, map to telemetry, score coverage, make gaps visible --
+      applies without modification, and part 3 applies it. But three breaks in
+      the analogy change how the mapping work proceeds, and each one has
+      operational consequences.
+
+      The first break is the defender's observation footprint. ATT&CK
+      techniques overwhelmingly execute on infrastructure the defender
+      operates -- their hosts, their network, their identity plane -- so the
+      question is usually which telemetry sees a technique, not whether any
+      can. ATLAS covers a lifecycle in which large phases run on the
+      adversary's own infrastructure: training a surrogate model, crafting
+      evasion inputs offline, staging poisoned data before it ever touches the
+      victim pipeline. Those techniques produce no events in any telemetry the
+      defender can deploy, which is why part 4's observability audit is
+      mandatory here and merely implicit in Chapter 1. The second break is
+      where the perimeter of observation sits. For ATT&CK the interesting
+      boundary is the defender's network edge and host boundary; for ATLAS it
+      is the model interface -- the gateway of Section 5.1 -- plus the
+      training pipeline, and a program whose telemetry stops at traditional
+      boundaries sees almost none of the matrix. The third break is tempo.
+      ATT&CK is mature and its technique inventory moves slowly; ATLAS is in
+      its rapid-expansion phase, with recent releases adding double-digit
+      technique counts in single quarters as agentic and generative attack
+      classes get catalogued. A mapping discipline calibrated to ATT&CK's
+      pace -- annual review, IDs cited casually -- silently breaks against
+      ATLAS's, which is why part 6 turns citation policy into enforced
+      mechanism.
+  part_3:
+    title: 'From Technique to Hypothesis: The Same Pattern, the Adversary''s Direction'
+    body: |-
+      The restatement pattern from Section 5.2 applies to ATLAS techniques
+      unchanged in mechanics and reversed in direction. A risk entry describes
+      what can go wrong for the defender; a technique entry describes what the
+      adversary does. The translation question is correspondingly sharper:
+      not 'what would we see if this risk materialised' but 'what does this
+      behaviour emit, and into which telemetry family'.
+
+      One worked translation shows the shape, using the technique family for
+      exfiltration through agent tool invocation -- a hijacked model moving
+      data outward through the tools it is empowered to call. Move one, name
+      the behaviour: the adversary, having gained instruction-level influence
+      over the model, drives tool calls whose arguments or destinations carry
+      data out. Move two, name the observable: tool call events -- function,
+      arguments, results -- captured at the gateway or orchestrator as the
+      action log Section 5.1 specified. Move three, state the hypothesis
+      falsifiably: exfiltration-bearing tool calls deviate from the
+      application's established action envelope in destination, argument
+      shape, or sequence, and are distinguishable from sanctioned calls when
+      the envelope is baselined per application and identity. Move four,
+      bound it: applications with legitimately broad tool surfaces will
+      stretch any envelope, so the hypothesis holds only with per-application
+      baselines -- a constraint Sections 5.8 and 5.9 inherit. The output
+      lands as a row in the hypotheses artifact: stable attack-class key from
+      the Section 5.1 map, technique name, hypothesis, telemetry families by
+      exact identifier, observability rating, prevalence tier, owning
+      section.
+
+      The artifact deliberately covers the chapter-relevant technique
+      families rather than the full matrix, and says so in its scope field.
+      Completeness against a fast-moving framework is a property the
+      recheck cadence maintains, not a property a snapshot can claim -- and
+      an artifact that silently implies full coverage of an eighty-plus
+      technique matrix would be committing mistake one of this section's
+      list.
+  part_4:
+    title: 'The Observability Audit: Coverage Claims Need Physics'
+    body: |-
+      Every hypothesis row carries an observability rating, and the rating is
+      the section's load-bearing discipline. Three values are enough.
+      Observable-now means the behaviour emits events into a telemetry family
+      the Section 5.1 inventory already specifies -- prompt injection into
+      prompt events, extraction-scale querying into token accounting, tool
+      exfiltration into tool call events. Needs-new-telemetry means the
+      behaviour is observable in principle but only through a family the
+      program may not have onboarded -- the pipeline provenance events that
+      poisoning and supply chain techniques require -- so the rating doubles
+      as an onboarding work item, and the backlog generator surfaces it as a
+      TELEMETRY-GAP flag rather than hiding it inside a priority score.
+      Not-observable means the technique executes outside the defender's
+      observation footprint entirely: the adversary's surrogate training runs,
+      their offline staging work, their research infrastructure. No telemetry
+      investment changes that physics.
+
+      The not-observable class is where TTP mapping goes wrong most often,
+      in both directions. The first wrong move is importing those techniques
+      as coverage obligations anyway -- rows on a dashboard, rules that fire
+      on nothing -- which manufactures exactly the false-confidence the
+      security preview of this section warns about: coverage claims for
+      attacks the platform physically cannot see. The second wrong move is
+      quietly dropping them, which loses real information. A not-observable
+      staging technique is still intelligence: it tells the defender which
+      observable techniques must follow if the staged attack is ever
+      executed. Offline adversarial example crafting is invisible; the
+      crafted inputs arriving at the inference API are prompt events. The
+      audit therefore records not-observable techniques with a downstream
+      pointer -- the observable technique family where the attack surfaces --
+      rather than deleting them. Coverage is claimed only where physics
+      allows; awareness is retained everywhere.
+  part_5:
+    title: 'The Crosswalk and the Test Corpus: Joining Views, Grounding Tests'
+    body: |-
+      Two frameworks now describe the same territory -- OWASP by risk, ATLAS
+      by adversary behaviour -- and the worst available move is running them
+      as parallel coverage systems, each with its own dashboard, double-
+      counting the overlaps and hiding the seams. The crosswalk artifact
+      prevents that by refusing to map framework-to-framework at all. Both
+      views join on the stable attack-class keys of the Section 5.1 surface
+      map: each crosswalk row binds one attack class to the ATLAS technique
+      names that execute it, the LLM Top 10 risk IDs that describe it, and
+      the single owning detector section. One detector, several framework
+      descriptions, zero double-counting -- and the platform can now answer
+      'show coverage by OWASP risk' and 'show coverage by ATLAS technique' as
+      two renderings of one underlying map. The seams are recorded rather
+      than implied: the crosswalk's coverage note states explicitly which
+      OWASP risks have no ATLAS row and why, because part 4's rule applies to
+      crosswalks too -- absences are information.
+
+      The case studies then do for testing what the techniques did for
+      hypotheses. Each documented ATLAS case study is a real incident mapped
+      to the techniques it exercised, which makes it a ready-made attack
+      chain: a sequence of behaviours, several of which land in this
+      chapter's detector scope. The test scenario artifact converts
+      chapter-relevant case-study archetypes -- an indirect injection
+      planted in retrieved content driving tool-call exfiltration, a
+      poisoned artifact entering the pipeline through the supply chain, an
+      extraction campaign against an inference API -- into regression
+      scenarios for the Chapter 3 unit-test harness: the event sequence the
+      scenario implies, the detectors that must fire, the tiers that may
+      legitimately stay silent. Incident-grounded scenarios set the floor
+      synthetic samples cannot: whatever else the detectors catch, they must
+      catch the attacks that have already happened.
+  part_6:
+    title: 'Do-Not-Cite-From-Memory as Mechanism'
+    body: |-
+      Section 5.2 established the two-sided pin as policy: detections bind to
+      stable attack classes, citations pin the framework edition. ATLAS's
+      tempo -- an actively expanding matrix whose technique counts and
+      identifiers shift release to release -- is what turns that policy into
+      enforced mechanism, because against a framework this fast, memory is
+      not merely unreliable but systematically stale: whatever inventory an
+      author or a model remembers describes a release that has since been
+      superseded.
+
+      The mechanism has three parts. The hypotheses artifact carries a
+      framework_pin block recording the release consulted, the pin date, and
+      the ID policy -- and its rows deliberately carry technique names, not
+      memorised IDs. The resolution map is the only place technique IDs
+      live, and it is filled by a human with the pinned release open at
+      atlas.mitre.org, one verified entry at a time. And the backlog
+      generator enforces the join: any hypothesis row without a resolved ID
+      is emitted with an [ID-UNRESOLVED] flag and the run exits non-zero, so
+      an unverified citation cannot ship a backlog any more than a failing
+      test can ship a rule. The same discipline governs this book's own
+      prose, which is why part 1 quoted the matrix's size as approximations
+      and why no technique ID appears in this section that was not verified
+      against current sources at writing time.
+
+      The recheck cadence completes the loop. On the book's market_currency
+      schedule -- quarterly, and before publication -- the pin is re-verified:
+      the current release is diffed against the pinned one, renamed or
+      renumbered techniques are remapped in the resolution map in one
+      reviewed change, and newly catalogued techniques relevant to the
+      chapter's scope enter the hypotheses artifact through the same
+      restatement pattern. The stable attack-class keys mean none of this
+      touches the detectors; the framework layer absorbs the change, which
+      is precisely what a framework layer is for. With both maps built and
+      joined, the framework work of Chapter 5 is complete, and the chapter
+      turns to what the maps have been pointing at all along: Section 5.4
+      builds the first detector.
+
+reference_materials:
+  table_1:
+    title: 'ATLAS Structure, Read for Detection Use'
+    description: |-
+      The five structural elements of ATLAS and what a detection engineer
+      does with each -- as opposed to what a red teamer or a governance
+      reader does with them.
+    columns:
+    - 'Element'
+    - 'What it is'
+    - 'Detection engineering use'
+    rows:
+    - - 'Tactics'
+      - 'Adversary objectives along the attack lifecycle; most adapted from
+        ATT&CK, two AI-specific (AI Model Access, AI Attack Staging)'
+      - 'Orientation and gap grouping -- which lifecycle phases the program
+        can observe at all'
+    - - 'Techniques'
+      - 'Concrete adversary methods under each tactic, identified as
+        AML.T-series entries'
+      - 'The unit of hypothesis translation: each chapter-relevant technique
+        becomes a hypothesis row with telemetry and an owner'
+    - - 'Sub-techniques'
+      - 'Refinements of a technique into specific implementations'
+      - 'Test-case granularity: variants a detector''s regression suite
+        should exercise'
+    - - 'Mitigations'
+      - 'Control-side pairings for techniques'
+      - 'Cross-reference for accepted gaps and architectural risks -- the
+        control that owns what detection does not'
+    - - 'Case studies'
+      - 'Documented real-world incidents mapped to the tactics and
+        techniques exercised'
+      - 'Regression test corpus: incident-grounded attack chains the
+        detectors must catch (deliverable 4)'
+  table_2:
+    title: 'Where the ATT&CK Analogy Holds and Breaks'
+    description: |-
+      The three breaks in the ATT&CK-to-ATLAS analogy and the operational
+      consequence of each for a detection program.
+    columns:
+    - 'Dimension'
+    - 'ATT&CK'
+    - 'ATLAS'
+    - 'Consequence for detection'
+    rows:
+    - - 'Coverage-map discipline'
+      - 'Enumerate, map to telemetry, score, expose gaps'
+      - 'Identical'
+      - 'Chapter 1 machinery transfers unchanged -- the analogy''s holding
+        half'
+    - - 'Observation footprint'
+      - 'Techniques largely execute on defender-operated infrastructure'
+      - 'Large lifecycle phases execute on adversary infrastructure'
+      - 'The observability audit is mandatory: rate every technique before
+        claiming reach (part 4)'
+    - - 'Perimeter of observation'
+      - 'Network edge, host boundary, identity plane'
+      - 'The model interface (gateway) plus the training pipeline'
+      - 'Telemetry that stops at traditional boundaries sees almost none of
+        the matrix -- Section 5.1''s inventory is the entry fee'
+    - - 'Framework tempo'
+      - 'Mature; inventory moves slowly'
+      - 'Rapid expansion; double-digit technique additions in single
+        quarters'
+      - 'Citation policy becomes mechanism: pinned release, resolution map,
+        generator enforcement (part 6)'
+  table_3:
+    title: 'Observability Ratings for Chapter-Relevant Technique Families'
+    description: |-
+      The hypothesis artifact''s technique families with their observability
+      ratings, telemetry, and owners -- the human view of deliverable 1. The
+      not-observable class is illustrated separately in the table''s final
+      rows with its downstream pointers.
+    columns:
+    - 'Technique family'
+    - 'Observability'
+    - 'Telemetry'
+    - 'Owner'
+    rows:
+    - - 'Direct prompt injection'
+      - 'observable_now'
+      - 'prompt_events'
+      - '5.4'
+    - - 'Indirect prompt injection / RAG poisoning'
+      - 'observable_now'
+      - 'prompt_events (context source tags)'
+      - '5.4'
+    - - 'System prompt extraction'
+      - 'observable_now'
+      - 'completion_events + prompt_events'
+      - '5.8'
+    - - 'Model extraction via inference API'
+      - 'observable_now'
+      - 'token_accounting'
+      - '5.7'
+    - - 'Exfiltration via agent tool invocation'
+      - 'observable_now'
+      - 'tool_call_events'
+      - '5.8-5.9'
+    - - 'Cost harvesting / denial of ML service'
+      - 'observable_now'
+      - 'token_accounting'
+      - '5.7'
+    - - 'Training data poisoning'
+      - 'needs_new_telemetry'
+      - 'pipeline_provenance'
+      - '5.6'
+    - - 'AI supply chain compromise'
+      - 'needs_new_telemetry'
+      - 'pipeline_provenance'
+      - '5.6'
+    - - 'Surrogate model training (staging)'
+      - 'not_observable'
+      - 'none -- adversary infrastructure; downstream pointer: extraction
+        querying in token_accounting'
+      - 'awareness only'
+    - - 'Offline adversarial input crafting (staging)'
+      - 'not_observable'
+      - 'none -- adversary infrastructure; downstream pointer: crafted
+        inputs arrive as prompt_events'
+      - 'awareness only'
+  table_4:
+    title: 'Case-Study Archetypes as Regression Scenarios'
+    description: |-
+      The scenario archetypes deliverable 4 derives from the ATLAS case-study
+      corpus: the attack chain each implies, the detectors that must fire,
+      and the section that owns each firing detector. Specific case-study
+      IDs are pulled from the pinned release when the scenario file is
+      instantiated -- names and IDs are never reproduced here from memory.
+    columns:
+    - 'Scenario archetype'
+    - 'Chain (event sequence)'
+    - 'Detectors that must fire'
+    - 'Owners'
+    rows:
+    - - 'Indirect injection to tool exfiltration'
+      - 'Poisoned retrieved content enters context -> model complies ->
+        exfiltration-bearing tool calls'
+      - 'Context-source scoring; action-envelope deviation'
+      - '5.4, 5.8-5.9'
+    - - 'Supply chain to backdoored behaviour'
+      - 'Unverified artifact enters pipeline -> registry mutation -> deployed
+        model deviates on canaries'
+      - 'Provenance verification; registry rules; behavioural canaries'
+      - '5.6'
+    - - 'Extraction campaign against inference API'
+      - 'Sustained high-diversity querying under one or few identities'
+      - 'Volume-diversity-coverage baseline scoring'
+      - '5.7'
+    - - 'System prompt theft'
+      - 'Extraction-attempt prompts -> canary marker appears in completion'
+      - 'Attempt patterns (prompt side); canary scan (output side)'
+      - '5.4, 5.8'
+    - - 'Consumption abuse / denial of wallet'
+      - 'Per-identity consumption exceeds baseline envelope at sustained
+        rate'
+      - 'Consumption baseline scoring with allowlist mechanism'
+      - '5.7'
+
+deliverables:
+  deliverable_1:
+    title: 'ATLAS Detection Hypotheses'
+    filename: 'atlas_detection_hypotheses.yaml'
+    description: |-
+      The machine-readable technique-to-hypothesis mapping: chapter-relevant
+      ATLAS technique families keyed by the stable Section 5.1 attack
+      classes, each carrying its hypothesis, exact telemetry family
+      identifiers, observability rating, prevalence tier, and owning section,
+      under a framework_pin block whose ID policy delegates all technique IDs
+      to the resolution map.
+    implementation_notes: |-
+      Rows deliberately carry technique names, never memorised IDs -- IDs
+      live only in atlas_id_resolution.yaml, filled against the pinned
+      release at atlas.mitre.org. The scope field states the artifact covers
+      LLM-application-layer observable techniques, not the full matrix;
+      completeness against a fast-moving framework is maintained by the
+      recheck cadence, not claimed by a snapshot. Keys must match the Section
+      5.1 attack-class identifiers exactly -- the crosswalk and generator
+      join on them.
+    code: |
+      # atlas_detection_hypotheses.yaml
+      # Section 0503 -- ATLAS ATT&CK for ML: Mapping Adversarial ML Tactics to Detection
+      # 20260717 | Detection Engineering: AI Security Detection (Section 0503 ATLAS Adversarial ML Mapping) by Raghav Dinesh
+      #
+      # Chapter-relevant ATLAS technique families translated into detection
+      # hypotheses. Rows key on the STABLE attack classes from the Section 5.1
+      # surface map; ATLAS technique IDs are resolved separately (atlas_id_resolution
+      # map) against the pinned release -- never from memory. Completeness is scoped:
+      # this file covers the techniques observable at the LLM application layer,
+      # not the full matrix.
+      framework_pin:
+        framework: 'MITRE ATLAS'
+        release_consulted: 'v5.4.0 (2026-02)'
+        pinned_on: '2026-07-17'
+        id_policy: 'technique IDs resolve via atlas_id_resolution.yaml against the pinned release; unresolved IDs block the backlog'
+        scope: 'LLM-application-layer observable techniques only; research-stage and model-internal techniques are out of platform scope by design'
+      hypotheses:
+        direct_prompt_injection:
+          atlas_technique_name: 'LLM Prompt Injection (direct)'
+          hypothesis: 'Exploitation places hostile instructions in the user turn; observable in prompt_events as scored content'
+          required_telemetry: ['prompt_events']
+          observability: 'observable_now'
+          prevalence_tier: 'high'
+          owning_section: '5.4'
+        indirect_prompt_injection:
+          atlas_technique_name: 'LLM Prompt Injection (indirect) / RAG poisoning family'
+          hypothesis: 'Exploitation plants instructions in retrieved content; observable in prompt_events context entries with source tags'
+          required_telemetry: ['prompt_events']
+          observability: 'observable_now'
+          prevalence_tier: 'high'
+          owning_section: '5.4'
+        system_prompt_discovery:
+          atlas_technique_name: 'LLM system prompt extraction / meta prompt discovery'
+          hypothesis: 'Exploitation elicits system prompt content; observable as canary markers in completion_events plus attempt patterns in prompt_events'
+          required_telemetry: ['completion_events', 'prompt_events']
+          observability: 'observable_now'
+          prevalence_tier: 'high'
+          owning_section: '5.8'
+        model_extraction:
+          atlas_technique_name: 'Extract ML model via inference API'
+          hypothesis: 'Distillation-scale querying is invisible per request and observable as volume-diversity-coverage anomalies in token_accounting per identity'
+          required_telemetry: ['token_accounting']
+          observability: 'observable_now'
+          prevalence_tier: 'medium'
+          owning_section: '5.7'
+        training_data_poisoning:
+          atlas_technique_name: 'Poison training data'
+          hypothesis: 'Tampering shifts dataset distributions or plants triggers; observable as statistical indicators at pipeline stage boundaries in pipeline_provenance'
+          required_telemetry: ['pipeline_provenance']
+          observability: 'needs_new_telemetry'
+          prevalence_tier: 'medium'
+          owning_section: '5.6'
+        ml_supply_chain_compromise:
+          atlas_technique_name: 'AI supply chain compromise (model / dataset / dependency)'
+          hypothesis: 'A tampered artifact enters the pipeline without valid provenance; observable as verification failures and unsanctioned registry mutations in pipeline_provenance'
+          required_telemetry: ['pipeline_provenance']
+          observability: 'needs_new_telemetry'
+          prevalence_tier: 'high'
+          owning_section: '5.6'
+        agent_tool_exfiltration:
+          atlas_technique_name: 'Exfiltration via AI agent tool invocation'
+          hypothesis: 'A hijacked model moves data out through tool calls; observable as anomalous tool_call_events read as an action log'
+          required_telemetry: ['tool_call_events']
+          observability: 'observable_now'
+          prevalence_tier: 'medium'
+          owning_section: '5.8-5.9'
+        cost_harvesting_denial:
+          atlas_technique_name: 'Denial of ML service / cost harvesting'
+          hypothesis: 'Abuse drives consumption beyond baseline envelopes; observable in token_accounting per identity and endpoint'
+          required_telemetry: ['token_accounting']
+          observability: 'observable_now'
+          prevalence_tier: 'medium'
+          owning_section: '5.7'
+  deliverable_2:
+    title: 'ATLAS-OWASP Crosswalk'
+    filename: 'atlas_owasp_crosswalk.yaml'
+    description: |-
+      The join between the two framework views, keyed on the stable Section
+      5.1 attack classes: each row binds one attack class to the ATLAS
+      technique names that execute it, the pinned-edition LLM Top 10 risk IDs
+      that describe it, and the single owning detector -- one detector,
+      several framework descriptions, zero double-counting. The coverage note
+      records the seams explicitly.
+    implementation_notes: |-
+      The crosswalk never maps framework-to-framework directly; both sides
+      join through the attack-class keys, which is what keeps a framework
+      revision on either side from tearing the join. Keys are asserted equal
+      to the hypotheses artifact''s keys at validation time. The coverage
+      note is normative content, not commentary: absences in a crosswalk are
+      recorded, not implied, per the part 4 rule.
+    code: |
+      # atlas_owasp_crosswalk.yaml
+      # Section 0503 -- ATLAS ATT&CK for ML: Mapping Adversarial ML Tactics to Detection
+      # 20260717 | Detection Engineering: AI Security Detection (Section 0503 ATLAS Adversarial ML Mapping) by Raghav Dinesh
+      #
+      # Crosswalk joining the two framework views on the STABLE attack-class keys
+      # from the Section 5.1 surface map. ATLAS rows cite the pinned release
+      # (v5.4.0, 2026-02); OWASP rows cite the pinned 2025 (v2.0) edition from the
+      # Section 5.2 matrix. One attack class may serve several entries in either
+      # framework -- the crosswalk is many-to-many by design.
+      crosswalk:
+        direct_prompt_injection:
+          atlas: ['LLM Prompt Injection (direct)']
+          owasp_llm_2025: ['LLM01']
+          detector: '5.4'
+        indirect_prompt_injection:
+          atlas: ['LLM Prompt Injection (indirect)', 'RAG poisoning family']
+          owasp_llm_2025: ['LLM01', 'LLM08']
+          detector: '5.4'
+        system_prompt_discovery:
+          atlas: ['LLM system prompt extraction / meta prompt discovery']
+          owasp_llm_2025: ['LLM07']
+          detector: '5.8'
+        model_extraction:
+          atlas: ['Extract ML model via inference API']
+          owasp_llm_2025: ['LLM10']
+          detector: '5.7'
+        training_data_poisoning:
+          atlas: ['Poison training data']
+          owasp_llm_2025: ['LLM04']
+          detector: '5.6'
+        ml_supply_chain_compromise:
+          atlas: ['AI supply chain compromise (model / dataset / dependency)']
+          owasp_llm_2025: ['LLM03']
+          detector: '5.6'
+        agent_tool_exfiltration:
+          atlas: ['Exfiltration via AI agent tool invocation']
+          owasp_llm_2025: ['LLM06', 'LLM05']
+          detector: '5.8-5.9'
+        cost_harvesting_denial:
+          atlas: ['Denial of ML service / cost harvesting']
+          owasp_llm_2025: ['LLM10']
+          detector: '5.7'
+      coverage_note: >
+        OWASP LLM02 (Sensitive Information Disclosure) and LLM09 (Misinformation)
+        have no ATLAS technique row here: LLM02 is an output-content risk detected
+        in 5.8 regardless of adversary TTP, and LLM09 is the accepted gap recorded
+        in the 5.2 matrix. Absences in a crosswalk are recorded, not implied.
+  deliverable_3:
+    title: 'Hypothesis Backlog Generator'
+    filename: 'hypothesis_backlog_generator.py'
+    description: |-
+      Emits the prioritised detection backlog from the hypothesis mapping.
+      Priority per row combines the observability weight, a bonus when the
+      environment already emits every required telemetry family, and the
+      prevalence tier; telemetry gaps are surfaced as explicit flags. Rows
+      whose technique ID is unresolved against the pinned release are emitted
+      with [ID-UNRESOLVED] and the run exits non-zero -- the do-not-cite-
+      from-memory rule, enforced in code.
+    implementation_notes: |-
+      Single quotes throughout per book convention. Uses PyYAML (the book''s
+      standard format library, in the repo''s requirements). The unresolved-ID
+      block is deliberately a hard failure rather than a warning: a backlog
+      is a shipping artifact, and an unverified citation in a shipping
+      artifact is the exact failure the mechanism exists to prevent. The
+      TELEMETRY-GAP flag intentionally rides alongside the priority score
+      rather than zeroing it -- a high-value hypothesis blocked on telemetry
+      is an onboarding work item, not a low priority.
+    code: |
+      #!/usr/bin/env python3
+      # hypothesis_backlog_generator.py
+      # Section 0503 -- ATLAS ATT&CK for ML: Mapping Adversarial ML Tactics to Detection
+      # 20260717 | Detection Engineering: AI Security Detection (Section 0503 ATLAS Adversarial ML Mapping) by Raghav Dinesh
+      # Single quotes throughout per book convention
+      '''Emit a prioritised detection backlog from the ATLAS hypothesis mapping.
+
+      Usage:
+          hypothesis_backlog_generator.py hypotheses.yaml resolution.yaml environment.yaml
+
+      Priority per hypothesis = observability weight + telemetry availability bonus
+      + prevalence weight. Rows whose technique ID is not resolved against the
+      pinned ATLAS release are emitted with an [ID-UNRESOLVED] flag and the run
+      exits non-zero -- the do-not-cite-from-memory rule, enforced in code.
+      '''
+      from __future__ import annotations
+
+      import sys
+
+      import yaml
+
+      OBSERVABILITY_WEIGHT = {'observable_now': 3, 'needs_new_telemetry': 1, 'not_observable': 0}
+      PREVALENCE_WEIGHT = {'high': 2, 'medium': 1, 'low': 0}
+      TELEMETRY_BONUS = 2
+
+
+      def score(h: dict, available: set[str]) -> int:
+          s = OBSERVABILITY_WEIGHT.get(h['observability'], 0)
+          s += PREVALENCE_WEIGHT.get(h['prevalence_tier'], 0)
+          if set(h['required_telemetry']) <= available:
+              s += TELEMETRY_BONUS
+          return s
+
+
+      def main() -> int:
+          if len(sys.argv) != 4:
+              print('usage: hypothesis_backlog_generator.py hypotheses.yaml resolution.yaml environment.yaml')
+              return 2
+          with open(sys.argv[1]) as fh:
+              hyp = yaml.safe_load(fh)
+          with open(sys.argv[2]) as fh:
+              res = yaml.safe_load(fh)
+          with open(sys.argv[3]) as fh:
+              env = yaml.safe_load(fh)
+
+          resolved = res.get('resolved', {}) or {}
+          available = set(env.get('available_telemetry', []))
+          pin = hyp['framework_pin']
+          print('framework: ' + pin['framework'] + ' -- ' + pin['release_consulted']
+                + ' (pinned ' + pin['pinned_on'] + ')')
+          print('environment: ' + env.get('name', 'unnamed'))
+          print('-' * 78)
+
+          rows = []
+          unresolved = 0
+          for key, h in hyp['hypotheses'].items():
+              atlas_id = resolved.get(key)
+              if atlas_id is None:
+                  atlas_id = '[ID-UNRESOLVED]'
+                  unresolved += 1
+              rows.append((score(h, available), key, atlas_id, h))
+
+          rows.sort(key=lambda r: (-r[0], r[1]))
+          for s, key, atlas_id, h in rows:
+              gap = '' if set(h['required_telemetry']) <= available else ' TELEMETRY-GAP'
+              print('P' + str(s) + '  ' + key.ljust(28) + atlas_id.ljust(17)
+                    + 'owner ' + str(h['owning_section']).ljust(9) + h['observability'] + gap)
+          print('-' * 78)
+          print('backlog: ' + str(len(rows)) + ' hypotheses, ' + str(unresolved) + ' unresolved IDs')
+          if unresolved:
+              print('BLOCKED: resolve every technique ID against the pinned release at')
+              print('atlas.mitre.org before this backlog ships -- IDs are never cited from memory.')
+              return 1
+          return 0
+
+
+      if __name__ == '__main__':
+          sys.exit(main())
+  deliverable_4:
+    title: 'ATLAS Case-Study Test Scenarios'
+    filename: 'atlas_test_scenarios.md'
+    description: |-
+      The case-study-derived regression scenarios for the Chapter 3 unit-test
+      harness: each archetype specifies the event chain a real incident class
+      implies, the detectors that must fire, the tiers that may legitimately
+      stay silent, and the instantiation step that binds the scenario to
+      specific case-study IDs from the pinned release.
+    implementation_notes: |-
+      Archetypes are shipped instead of named case studies for the same
+      reason the hypotheses ship names instead of IDs: the corpus grows
+      release to release, and the instantiation step -- pull the current
+      case-study list from the pinned release, bind matching studies to each
+      archetype -- keeps the test suite current without ever reproducing the
+      catalogue from memory. The must-fire and may-stay-silent split is the
+      part rule authors skip and regret: a scenario that only asserts firings
+      cannot catch an over-firing detector.
+    code: |
+      <!--
+      atlas_test_scenarios.md
+      Section 0503 -- ATLAS ATT&CK for ML: Mapping Adversarial ML Tactics to Detection
+      20260717 | Detection Engineering: AI Security Detection (Section 0503 ATLAS Adversarial ML Mapping) by Raghav Dinesh
+      -->
+      # ATLAS Case-Study Test Scenarios
+
+      Incident-grounded regression scenarios for the chapter's detectors.
+      Instantiate against the pinned ATLAS release (v5.4.0, 2026-02): pull
+      the current case-study list at atlas.mitre.org, bind matching studies
+      to each archetype below by their AML.CS identifiers, and record the
+      binding in the test manifest. Case-study IDs are never reproduced here
+      from memory.
+
+      ## Scenario 1 -- Indirect injection to tool exfiltration
+
+      - **Chain:** poisoned retrieved content enters the context window
+        (tagged source) -> model complies -> tool calls carry data outward.
+      - **Must fire:** context-source scoring (5.4); action-envelope
+        deviation on tool_call_events (5.8-5.9).
+      - **May stay silent:** the direct-injection regex tier -- the user turn
+        is clean by construction in this scenario.
+      - **Corpus events:** one prompt_event with a hostile rag_document
+        context entry; three tool_call_events, one exfiltration-bearing.
+
+      ## Scenario 2 -- Supply chain to backdoored behaviour
+
+      - **Chain:** unverified artifact enters the pipeline -> unsanctioned
+        registry mutation -> deployed model drifts on behavioural canaries.
+      - **Must fire:** provenance verification rule; registry mutation rule;
+        canary drift alert (all 5.6).
+      - **May stay silent:** every traffic-side detector -- the attack never
+        touches user traffic, which is the scenario's teaching point.
+      - **Corpus events:** pipeline_provenance sequence (ingest without
+        chain, mutation outside sanctioned path), then canary probe results.
+
+      ## Scenario 3 -- Extraction campaign against the inference API
+
+      - **Chain:** sustained high-volume, high-diversity querying under one
+        identity across days.
+      - **Must fire:** volume-diversity-coverage baseline scoring (5.7).
+      - **May stay silent:** per-request content tiers -- every individual
+        prompt is benign, which is the scenario's teaching point.
+      - **Corpus events:** token_accounting series exceeding the identity's
+        baseline envelope on volume and diversity simultaneously.
+
+      ## Scenario 4 -- System prompt theft
+
+      - **Chain:** extraction-attempt prompts -> canary marker appears in a
+        completion.
+      - **Must fire:** attempt patterns on the prompt side (5.4); canary
+        scan on the output side (5.8).
+      - **May stay silent:** consumption baselines -- volume is nominal.
+      - **Corpus events:** prompt_events with extraction phrasings; one
+        completion_event containing the seeded canary marker.
+
+      ## Scenario 5 -- Consumption abuse / denial of wallet
+
+      - **Chain:** per-identity consumption exceeds the baseline envelope at
+        a sustained rate without extraction-style diversity.
+      - **Must fire:** consumption baseline scoring with the allowlist
+        mechanism consulted (5.7).
+      - **May stay silent:** extraction scoring's diversity dimension --
+        distinguishing the two abuse shapes is the scenario's teaching point.
+      - **Corpus events:** token_accounting series high on volume, flat on
+        diversity; identity absent from the sanctioned-bulk allowlist.
+
+      ## Harness contract
+
+      Each scenario compiles to a Chapter 3 unit-test case: corpus events in,
+      expected firings and expected silences asserted. A detector change that
+      breaks a must-fire is a regression; one that breaks a may-stay-silent
+      is an over-firing regression -- both fail CI.
+
+common_mistakes:
+  mistake_1:
+    description: |-
+      Importing the full ATLAS matrix as a coverage obligation -- every
+      technique a dashboard row, every row a detection work item, no
+      observability audit in between.
+    why_it_happens: |-
+      That is exactly how ATT&CK onboarding works in mature programs, ATLAS
+      looks structurally identical, and a bigger mapped matrix reads as
+      diligence in a coverage review.
+    consequence: |-
+      Coverage claims for attacks the platform physically cannot see:
+      staging techniques that execute on adversary infrastructure get rules
+      that fire on nothing, dashboards report reach that does not exist, and
+      the genuinely observable gaps hide behind the noise of impossible
+      obligations.
+    correct_approach: |-
+      Audit observability first, per part 4: rate every technique
+      observable_now, needs_new_telemetry, or not_observable; claim coverage
+      only in the first class, convert the second into telemetry onboarding
+      work, and record the third with downstream pointers instead of rules.
+  mistake_2:
+    description: |-
+      Citing ATLAS technique IDs, counts, or inventories from memory --
+      hard-coding AML.T identifiers into rules, prose, or dashboards without
+      verifying against the pinned release.
+    why_it_happens: |-
+      IDs look stable because ATT&CK''s are; the matrix is a browser tab
+      away, and resolution feels like ceremony when the author is confident
+      they remember the entry.
+    consequence: |-
+      ATLAS is in rapid expansion, and whatever an author or a model
+      remembers describes a superseded release. Stale IDs bind rules to
+      renamed or renumbered techniques, dashboards misreport silently, and
+      the errors are undetectable by inspection because the citations look
+      authoritative.
+    correct_approach: |-
+      Enforce the discipline in code, per part 6: names in the hypotheses
+      artifact, IDs only in the resolution map filled against the pinned
+      release, and a generator that emits [ID-UNRESOLVED] and exits non-zero
+      rather than shipping an unverified citation.
+  mistake_3:
+    description: |-
+      Skipping the observability audit''s honest exclusions in the other
+      direction -- quietly deleting not-observable techniques from the map
+      because they cannot be covered.
+    why_it_happens: |-
+      A map with only coverable rows is tidier, review conversations about
+      permanent gaps are uncomfortable, and deletion feels equivalent to the
+      accepted-gap discipline of Section 5.2.
+    consequence: |-
+      Real intelligence is lost: not-observable staging techniques predict
+      which observable techniques follow when the staged attack executes.
+      Deleting them severs the pointer, so the program loses the early-
+      warning framing that makes the observable detections make sense as a
+      set.
+    correct_approach: |-
+      Record not-observable techniques with downstream pointers -- the
+      observable family where the attack surfaces -- per part 4. Awareness
+      is retained everywhere; coverage is claimed only where physics allows.
+  mistake_4:
+    description: |-
+      Treating ATLAS case studies as background reading rather than as the
+      detector regression corpus.
+    why_it_happens: |-
+      Case studies read like incident journalism, the test suite already has
+      synthetic samples, and converting narrative incidents into event
+      sequences is unglamorous work with no dashboard payoff.
+    consequence: |-
+      The test suite asserts the detectors catch the attacks the rule
+      authors imagined, not the attacks that have actually happened -- and
+      the difference is precisely the incidents the community documented.
+      Detectors pass CI while failing the historical record.
+    correct_approach: |-
+      Compile case-study archetypes into harness scenarios per deliverable
+      4: event chains in, must-fire and may-stay-silent assertions out,
+      instantiated against the pinned release''s corpus so new case studies
+      become new regression floor.
+  mistake_5:
+    description: |-
+      Running the ATLAS map and the OWASP matrix as parallel coverage
+      systems -- two artifacts, two dashboards, no crosswalk, mapped
+      framework-to-framework where they are joined at all.
+    why_it_happens: |-
+      Each framework arrives with its own community, its own review
+      meetings, and its own tooling; direct framework-to-framework mapping
+      is the obvious join and nobody owns the seam between them.
+    consequence: |-
+      Overlapping entries are double-counted as independent coverage,
+      genuine seams -- risks one framework describes and the other does not
+      -- disappear between the dashboards, and a revision on either side
+      tears every framework-to-framework link that was hand-maintained.
+    correct_approach: |-
+      Join both views on the stable attack-class keys per part 5: one
+      underlying map, two framework renderings, seams recorded explicitly in
+      the crosswalk''s coverage note, and framework revisions absorbed at
+      the framework layer without touching the join.
+
+section_summary:
+  compact: |-
+    MITRE ATLAS supplies the adversary-TTP view of the AI surface --
+    ATT&CK-shaped tactics and techniques grounded in documented incidents,
+    with two AI-specific tactics (AI Model Access, AI Attack Staging) and a
+    fast-growing technique inventory -- and this section runs the Section 5.2
+    conversion machinery against it with the one discipline a TTP framework
+    adds: the observability audit. Chapter-relevant techniques become
+    hypotheses bound to exact telemetry families and rated observable_now,
+    needs_new_telemetry, or not_observable, with coverage claimed only where
+    the platform''s telemetry can physically witness the behaviour and
+    not-observable staging techniques retained as awareness with downstream
+    pointers. The crosswalk joins the ATLAS and OWASP views on the stable
+    Section 5.1 attack-class keys -- one map, two renderings, seams recorded
+    -- while case-study archetypes compile into must-fire and may-stay-silent
+    regression scenarios for the Chapter 3 harness. Against ATLAS''s tempo,
+    the citation policy of 5.2 becomes mechanism: a pinned release, a
+    resolution map filled at source, and a backlog generator that exits
+    non-zero on any technique ID cited from memory. The framework layer is
+    complete; the chapter turns to building its first detector.
+  key_takeaways:
+  - 'ATLAS gives the AI surface the adversary-behaviour enumeration that
+    detections actually fire on, and the Chapter 1 coverage discipline
+    transfers to it unchanged -- but only alongside the observability audit
+    the ATT&CK analogy does not require'
+  - 'Three breaks in the analogy drive the section: adversary-side
+    execution demands observability ratings, the observation perimeter moves
+    to the gateway and pipeline, and the framework''s tempo turns citation
+    policy into enforced mechanism'
+  - 'Coverage is claimed only for observable_now techniques;
+    needs_new_telemetry rows are onboarding work surfaced as TELEMETRY-GAP
+    flags, and not_observable techniques are retained as awareness with
+    downstream pointers, never deleted and never given rules'
+  - 'The crosswalk joins ATLAS and OWASP on stable attack-class keys rather
+    than framework-to-framework -- one underlying map, two renderings, zero
+    double-counting, seams recorded explicitly'
+  - 'Case studies are the regression corpus: incident-grounded scenarios
+    with must-fire and may-stay-silent assertions set the floor synthetic
+    samples cannot'
+  - 'Technique IDs live only in a resolution map filled against the pinned
+    release, and the backlog generator refuses to ship an unresolved ID --
+    do-not-cite-from-memory as a failing build, not a good intention'
+
+preview_section_05_04:
+  title: 'Detecting Prompt Injection: Regex, Classifier, and Hybrid Approaches'
+  summary: |-
+    The framework layer is complete: the maps name prompt injection as the
+    highest-prevalence, observable-now hypothesis on the backlog, owned by
+    Section 5.4 -- so Section 5.4 builds it. The chapter''s first full
+    detector takes shape as a three-tier pipeline: a versioned regex pattern
+    library prefiltering known technique families, a classifier scoring the
+    phrasings regex cannot express, and hybrid escalation logic sequencing
+    the two -- with indirect injection handled by scoring every tagged
+    context source, and every tier measured for precision, recall, and
+    latency against a labelled corpus before Section 5.9 decides what earns
+    a place in the request path.
+
+metadata:
+  tags:
+  - 'mitre-atlas'
+  - 'adversarial-ml'
+  - 'ttp-mapping'
+  - 'detection-hypothesis'
+  - 'observability-audit'
+  - 'framework-crosswalk'
+  - 'case-study-testing'
+  - 'regression-corpus'
+  - 'version-pinning'
+  - 'citation-discipline'
+  - 'detection-backlog'
+  - 'ai-security'
+  - 'coverage-map'
+  cross_chapter_references:
+  - 'Chapter 1, Section 1.4: ATT&CK as architecture -- the tactic-and-
+    technique model and coverage discipline ATLAS inherits'
+  - 'Chapter 3: the unit-test harness the case-study scenarios compile into,
+    and the CI discipline the generator''s exit codes plug into'
+  - 'Section 5.1: the attack-class keys every artifact in this section joins
+    on, and the telemetry families the hypotheses bind to'
+  - 'Section 5.2: the restatement pattern, the two-sided pin, and the
+    coverage matrix the crosswalk joins against'
+  forward_references:
+  - 'Section 5.4: the first detector built from the backlog''s top
+    hypotheses -- direct and indirect prompt injection'
+  - 'Sections 5.6-5.9: the owning sections for the remaining hypothesis
+    rows, from pipeline gates to action-log rules'
+  - 'Section 5.10: consolidates the unified coverage view -- OWASP, ATLAS,
+    and the crosswalk -- as the chapter''s measurable outcome'
