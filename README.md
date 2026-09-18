@@ -1,4 +1,4 @@
-### Detection Engineering at Scale
+# Detection Engineering at Scale
  
 Field guide to building detection platforms that hold under real-world conditions.
  
@@ -11,7 +11,11 @@ Most detection books teach rule syntax. This one teaches the system underneath t
 - Part III — Production: multi-cloud deployment, billion-event performance, false positive reduction
 - Part IV — Advanced: threat intelligence integration, automated response, compliance-as-detection
 - Part V — Leadership: team structure, executive communication, what comes next
-Work in progress. Index committed. Chapters shipping through 2026-Q4.
+
+Work in progress. The planned book has 15 chapters; this repository currently
+contains the [Chapter 5 index](book/chapter_05_index.yaml) and its ten sections
+on AI security detection. Other chapters are not yet committed. Chapters are
+planned to ship through 2026-Q4.
  
 ---
  
