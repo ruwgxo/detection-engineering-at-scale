@@ -13,7 +13,7 @@ Most detection books teach rule syntax. This one teaches the system underneath t
 - Part V — Leadership: team structure, executive communication, what comes next
 
 Work in progress. The planned book has 15 chapters; this repository currently
-contains the [Chapter 5 index](book/chapter_05_index.yaml) and its ten sections
+contains the [Chapter 5 index](book/section_05_00_index.yaml) and its ten sections
 on AI security detection. Other chapters are not yet committed. Chapters are
 planned to ship through 2026-Q4.
  

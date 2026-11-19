@@ -689,7 +689,7 @@ deliverables:
     -->
     # Chapter 5 Knowledge Assessment
 
-    Mapped to the chapter completion criteria in `chapter_05_index.yaml`. Questions
+    Mapped to the chapter completion criteria in `section_05_00_index.yaml`. Questions
     are diagnostic rather than recall-based: each one has a wrong answer that a
     reader who skimmed the chapter would plausibly give, and the answer key names
     it, because knowing which misconception you hold is more useful than a score.
